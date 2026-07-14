@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PokemonMergeGame } from '../game/engine'
-import { FAMILIES, GOAL_TIER, getTile } from '../data/families'
+import { FAMILIES, GOAL_TIER, MAX_TIER, getTile } from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
 
 export default function Game() {
@@ -23,6 +23,8 @@ export default function Game() {
   const [inDanger, setInDanger] = useState(false)
   const [discovered, setDiscovered] = useState<Set<string>>(new Set())
   const [infoOpen, setInfoOpen] = useState(false)
+  const [activePowerIds, setActivePowerIds] = useState<PowerId[]>([POWERS[0].id])
+  const [capstoneFamilyId, setCapstoneFamilyId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -53,6 +55,10 @@ export default function Game() {
       onDangerChange: setInDanger,
       onDiscovered: (fam, tier) => {
         setDiscovered((prev) => new Set(prev).add(`${fam}-${tier}`))
+      },
+      onActivePowersChange: setActivePowerIds,
+      onCapstoneFormed: (fam) => {
+        setCapstoneFamilyId(fam)
       },
     })
     gameRef.current = game
@@ -87,10 +93,15 @@ export default function Game() {
     gameRef.current?.restartGame()
   }
 
+  const handleChoosePower = (id: PowerId) => {
+    gameRef.current?.choosePower(id)
+    setCapstoneFamilyId(null)
+  }
+
   const nowTile = getTile(dropFamilyId, 0)
   const nextTile = getTile(nextFamilyId, 0)
   const goalTile = getTile(familyId, GOAL_TIER)
-  const activePowers = POWERS.filter((p) => p.unlockLevel <= levelIndex)
+  const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-slate-950 text-slate-100">
@@ -171,6 +182,15 @@ export default function Game() {
           armedPower={armedPower}
           discovered={discovered}
           onClose={() => setInfoOpen(false)}
+        />
+      )}
+
+      {capstoneFamilyId && (
+        <CapstonePowerModal
+          familyId={capstoneFamilyId}
+          activePowerIds={activePowerIds}
+          charges={powerCharges}
+          onChoose={handleChoosePower}
         />
       )}
     </div>
@@ -399,6 +419,58 @@ function InfoOverlay({
             }),
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function CapstonePowerModal({
+  familyId,
+  activePowerIds,
+  charges,
+  onChoose,
+}: {
+  familyId: string
+  activePowerIds: PowerId[]
+  charges: Record<PowerId, number>
+  onChoose: (id: PowerId) => void
+}) {
+  const capstone = getTile(familyId, MAX_TIER)
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">
+      <img src={capstone.sprite} alt={capstone.name} className="h-20 w-20 object-contain" />
+      <div className="text-center">
+        <div className="text-lg font-bold text-yellow-300">{capstone.name} discovered!</div>
+        <div className="text-sm text-slate-400">Choose a power to boost:</div>
+      </div>
+
+      <div className="flex w-full max-w-xs flex-col gap-2">
+        {POWERS.map((power) => {
+          const isNew = !activePowerIds.includes(power.id)
+          return (
+            <button
+              key={power.id}
+              onClick={() => onChoose(power.id)}
+              className="flex items-center gap-3 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-left active:scale-95"
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-500 bg-slate-700 text-base">
+                {power.id === 'pokeball' ? <PokeballIcon /> : power.icon}
+              </span>
+              <span className="flex-1">
+                <div className="text-sm font-semibold text-slate-100">{power.name}</div>
+                <div className="text-xs text-slate-400">{power.description}</div>
+              </span>
+              <span
+                className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${
+                  isNew ? 'bg-yellow-400 text-slate-900' : 'bg-slate-700 text-slate-300'
+                }`}
+              >
+                {isNew ? 'NEW!' : `+1 (${charges[power.id] ?? 0})`}
+              </span>
+            </button>
+          )
+        })}
       </div>
     </div>
   )

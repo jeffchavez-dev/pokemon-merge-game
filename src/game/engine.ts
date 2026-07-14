@@ -59,6 +59,11 @@ type Celebration = {
   familyId: string
 }
 
+type TidalWaveEffect = {
+  t: number
+  duration: number
+}
+
 type Particle = {
   x: number
   y: number
@@ -93,6 +98,8 @@ export interface GameCallbacks {
   onArmedPowerChange: (powerId: PowerId | null) => void
   onDangerChange: (inDanger: boolean) => void
   onDiscovered: (familyId: string, tier: number) => void
+  onActivePowersChange: (ids: PowerId[]) => void
+  onCapstoneFormed: (familyId: string) => void
 }
 
 function rand(min: number, max: number) {
@@ -210,6 +217,7 @@ export class PokemonMergeGame {
   private pokeballThrows: PokeballThrow[] = []
   private lightningStrikes: LightningStrike[] = []
   private celebration: Celebration | null = null
+  private waveEffect: TidalWaveEffect | null = null
   private discovered = new Set<string>()
 
   // Real measured board size (device viewport driven) and the scale factor
@@ -234,6 +242,9 @@ export class PokemonMergeGame {
   private powerCharges: Record<PowerId, number> = this.freshCharges()
   private armedPower: PowerId | null = null
   private isDanger = false
+  // Powers unlocked early via a capstone bonus pick, on top of the normal
+  // one-per-level schedule. Persists for the whole game session.
+  private bonusUnlockedPowers = new Set<PowerId>()
 
   constructor(container: HTMLElement, callbacks: GameCallbacks) {
     this.container = container
@@ -251,7 +262,7 @@ export class PokemonMergeGame {
     this.aimX = this.width / 2
 
     this.initWorld()
-    this.startLevel(0, false)
+    this.startLevel(0, false, true)
   }
 
   private initWorld() {
@@ -291,6 +302,7 @@ export class PokemonMergeGame {
       this.updatePokeballThrows()
       this.updateLightningStrikes()
       this.updateCelebration()
+      this.updateTidalWave()
       this.updateDangerState()
       this.checkGameOver()
     })
@@ -301,6 +313,7 @@ export class PokemonMergeGame {
       this.drawPokeballThrows()
       this.drawLightningStrikes()
       this.drawCelebration()
+      this.drawTidalWave()
     })
 
     Matter.Render.run(this.render)
@@ -337,13 +350,17 @@ export class PokemonMergeGame {
     return charges
   }
 
-  // Powers a player has unlocked so far (one unlocks per level, capped once
-  // the whole roster is unlocked).
+  // Powers a player has unlocked so far: one per level on the normal
+  // schedule, plus any picked early via a capstone bonus.
   activePowers() {
-    return POWERS.filter((p) => p.unlockLevel <= this.levelIndex)
+    return POWERS.filter((p) => p.unlockLevel <= this.levelIndex || this.bonusUnlockedPowers.has(p.id))
   }
 
-  private startLevel(index: number, keepScore: boolean) {
+  // clearBoard is false for normal level-to-level progression — the board
+  // (and its growing clutter) carries over, since the goal just changes.
+  // It's only cleared on an explicit retry (after game over) or a full
+  // restart, where a fresh board is actually needed.
+  private startLevel(index: number, keepScore: boolean, clearBoard: boolean) {
     this.levelIndex = index
     this.gameOver = false
     this.frozen = false
@@ -352,14 +369,16 @@ export class PokemonMergeGame {
     this.pokeballThrows = []
     this.lightningStrikes = []
     this.celebration = null
+    this.waveEffect = null
     this.armedPower = null
     this.powerCharges = this.freshCharges()
     this.isDanger = false
     if (!keepScore) this.score = 0
 
-    const dynamicBodies = this.engine.world.bodies.filter((b) => !b.isStatic)
-    Matter.Composite.remove(this.engine.world, dynamicBodies)
-    this.previewBody = null
+    if (clearBoard) {
+      const dynamicBodies = this.engine.world.bodies.filter((b) => !b.isStatic)
+      Matter.Composite.remove(this.engine.world, dynamicBodies)
+    }
 
     this.aimX = this.width / 2
     this.dropFamilyId = this.randomPoolFamilyId()
@@ -373,6 +392,7 @@ export class PokemonMergeGame {
     this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     this.callbacks.onArmedPowerChange(null)
     this.callbacks.onDangerChange(false)
+    this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
   }
 
   private markDiscovered(familyId: string, tier: number) {
@@ -722,7 +742,33 @@ export class PokemonMergeGame {
       this.beginCelebration(tile.familyId, midX, midY)
       return true
     }
+    if (newTier === MAX_TIER) {
+      this.beginCapstoneBonus(tile.familyId, midX, midY)
+      return true
+    }
     return false
+  }
+
+  // A capstone ("new discovery") forming is a bonus moment independent of
+  // level progress — freeze the board and let the player pick a power to
+  // unlock early (or a bonus charge if they already have every power).
+  private beginCapstoneBonus(familyId: string, x: number, y: number) {
+    this.frozen = true
+    this.spawnCelebrationEffect(familyId, x, y)
+    this.callbacks.onCapstoneFormed(familyId)
+  }
+
+  // Resolves a capstone bonus choice: unlocks the power if it isn't active
+  // yet, otherwise grants a bonus charge for the rest of this level.
+  choosePower(id: PowerId) {
+    if (!this.activePowers().some((p) => p.id === id)) {
+      this.bonusUnlockedPowers.add(id)
+      this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
+    } else {
+      this.powerCharges[id] = (this.powerCharges[id] ?? 0) + 1
+      this.callbacks.onPowerChargesChange({ ...this.powerCharges })
+    }
+    this.frozen = false
   }
 
   // Goal reached: freeze the board and let the newly-formed Pokemon sit
@@ -741,9 +787,9 @@ export class PokemonMergeGame {
         const wrapsToNewCycle = nextIndex > 0 && nextIndex % FAMILIES.length === 0
         if (wrapsToNewCycle) {
           this.callbacks.onCycleComplete(nextIndex / FAMILIES.length)
-          setTimeout(() => this.startLevel(nextIndex, true), CYCLE_BANNER_MS)
+          setTimeout(() => this.startLevel(nextIndex, true, false), CYCLE_BANNER_MS)
         } else {
-          this.startLevel(nextIndex, true)
+          this.startLevel(nextIndex, true, false)
         }
       }, LEVEL_TRANSITION_MS)
     }, CELEBRATION_MS)
@@ -848,11 +894,12 @@ export class PokemonMergeGame {
   }
 
   retryLevel() {
-    this.startLevel(this.levelIndex, true)
+    this.startLevel(this.levelIndex, true, true)
   }
 
   restartGame() {
-    this.startLevel(0, false)
+    this.bonusUnlockedPowers.clear()
+    this.startLevel(0, false, true)
   }
 
   // --- Special powers ---------------------------------------------------
@@ -1086,8 +1133,77 @@ export class PokemonMergeGame {
       Matter.Body.setVelocity(body, { x: rand(-7, 7) * this.scale, y: rand(-9, -4) * this.scale })
       Matter.Body.setAngularVelocity(body, rand(-0.2, 0.2))
     }
-    this.spawnMergeEffect('water', this.width / 2, this.height * 0.4)
+    this.waveEffect = { t: 0, duration: 1000 }
+    for (let i = 0; i < 3; i++) {
+      this.spawnMergeEffect('water', (this.width / 4) * (i + 1), this.height * 0.6)
+    }
     return true
+  }
+
+  private updateTidalWave() {
+    if (!this.waveEffect) return
+    const dt = this.engine.timing.lastDelta || 16.666
+    this.waveEffect.t += dt
+    if (this.waveEffect.t >= this.waveEffect.duration) this.waveEffect = null
+  }
+
+  // A real sweeping wave crest — rises up from the bottom of the board,
+  // peaks, then recedes — rather than just a puff of particles, so Tidal
+  // Wave actually reads as water washing across the board.
+  private drawTidalWave() {
+    if (!this.waveEffect) return
+    const { t, duration } = this.waveEffect
+    const progress = t / duration
+    const surge = Math.sin(Math.PI * progress) // rises then falls back to 0
+    const ctx = this.render.context
+
+    const baseY = this.height - surge * this.height * 0.7
+    const amplitude = 12 * this.scale * (0.4 + surge)
+    const waveLength = this.width / 2.5
+    const steps = 28
+
+    const crest: Array<{ x: number; y: number }> = []
+    for (let i = 0; i <= steps; i++) {
+      const x = (i / steps) * this.width
+      const y = baseY + Math.sin(x / waveLength + t / 140) * amplitude
+      crest.push({ x, y })
+    }
+
+    ctx.save()
+    ctx.globalAlpha = 0.35 + 0.35 * surge
+
+    const grad = ctx.createLinearGradient(0, baseY - amplitude, 0, this.height)
+    grad.addColorStop(0, '#bae6fd')
+    grad.addColorStop(0.4, '#38bdf8')
+    grad.addColorStop(1, '#0369a1')
+    ctx.fillStyle = grad
+
+    ctx.beginPath()
+    ctx.moveTo(0, this.height)
+    for (const p of crest) ctx.lineTo(p.x, p.y)
+    ctx.lineTo(this.width, this.height)
+    ctx.closePath()
+    ctx.fill()
+
+    // Foam line along the crest.
+    ctx.globalAlpha = 0.7 + 0.3 * surge
+    ctx.strokeStyle = '#f0f9ff'
+    ctx.lineWidth = 3 * this.scale
+    ctx.beginPath()
+    crest.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+    ctx.stroke()
+
+    // Small foam caps riding the crest.
+    for (let i = 2; i < crest.length; i += 5) {
+      const p = crest[i]
+      ctx.globalAlpha = 0.6 * surge
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 2.5 * this.scale, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    ctx.restore()
   }
 
   private useRareCandy(): boolean {
