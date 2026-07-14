@@ -14,3 +14,12 @@ body {
   background: #0f172a;
   touch-action: none;
 }
+
+/* Matter.js's canvas has no intrinsic CSS size — without this it renders
+   at its fixed drawing-buffer resolution and gets clipped by the
+   game-board wrapper's overflow-hidden on any narrower viewport. */
+.game-board canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}

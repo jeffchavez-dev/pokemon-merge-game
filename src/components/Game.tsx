@@ -83,7 +83,6 @@ export default function Game() {
     gameRef.current?.restartGame()
   }
 
-  const family = FAMILIES[levelIndex]
   const nowTile = getTile(dropFamilyId, 0)
   const nextTile = getTile(nextFamilyId, 0)
   const goalTile = getTile(familyId, GOAL_TIER)
@@ -93,35 +92,17 @@ export default function Game() {
     <div className="flex min-h-screen w-full flex-col items-center justify-center gap-4 bg-slate-950 px-4 py-6 text-slate-100">
       <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Pokemon Merge</h1>
 
-      <div className="flex w-full max-w-[380px] items-center justify-between gap-3 text-sm">
-        <div className="rounded-lg bg-slate-800 px-3 py-2">
-          <div className="text-xs text-slate-400">Score</div>
-          <div className="text-lg font-bold">{score}</div>
-        </div>
-        <div className="rounded-lg bg-slate-800 px-3 py-2">
-          <div className="text-xs text-slate-400">Best</div>
-          <div className="text-lg font-bold">{bestScore}</div>
-        </div>
-        <div className="flex items-center gap-2 rounded-lg bg-slate-800 px-3 py-2">
-          <div className="flex flex-col items-center">
-            <span className="text-[10px] text-slate-400">Now</span>
-            <img src={nowTile.sprite} alt={nowTile.name} className="h-8 w-8 object-contain" />
-          </div>
-          <div className="flex flex-col items-center opacity-60">
-            <span className="text-[10px] text-slate-400">Next</span>
-            <img src={nextTile.sprite} alt={nextTile.name} className="h-6 w-6 object-contain" />
-          </div>
-        </div>
-      </div>
-
-      <GoalPanel levelIndex={levelIndex} familyName={family.name} goalTile={goalTile} />
-
-      <PowerBar
+      <HeaderBar
+        score={score}
+        bestScore={bestScore}
+        goalTile={goalTile}
+        nowTile={nowTile}
+        nextTile={nextTile}
         powers={activePowers}
         charges={powerCharges}
         armedPower={armedPower}
         inDanger={inDanger}
-        onUse={handleUsePower}
+        onUsePower={handleUsePower}
       />
 
       <div
@@ -129,10 +110,17 @@ export default function Game() {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerDown={handlePointerMove}
-        className={`relative touch-none overflow-hidden rounded-2xl border-2 shadow-2xl transition-colors ${
+        className={`game-board relative touch-none overflow-hidden rounded-2xl border-2 shadow-2xl transition-colors ${
           armedPower ? 'border-yellow-400' : 'border-slate-700'
         }`}
-        style={{ width: GAME_WIDTH, height: GAME_HEIGHT, maxWidth: '92vw' }}
+        style={{
+          aspectRatio: `${GAME_WIDTH} / ${GAME_HEIGHT}`,
+          // Shrink to fit whichever is tighter: the viewport width, the
+          // game's native size, or the height left over after the
+          // surrounding UI — so the board scales down on short phone
+          // screens instead of getting clipped or pushed off-screen.
+          width: `min(92vw, ${GAME_WIDTH}px, calc((100dvh - 460px) * ${GAME_WIDTH / GAME_HEIGHT}))`,
+        }}
       >
         {levelBanner && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-slate-950/80 backdrop-blur-sm">
@@ -183,88 +171,106 @@ export default function Game() {
   )
 }
 
-function GoalPanel({
-  levelIndex,
-  familyName,
-  goalTile,
-}: {
-  levelIndex: number
-  familyName: string
-  goalTile: ReturnType<typeof getTile>
-}) {
+function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className="flex w-full max-w-[380px] items-center justify-center gap-3 rounded-lg bg-slate-800 px-4 py-2">
-      <div className="flex flex-col items-center">
-        <span className="text-[10px] text-slate-400">Goal</span>
-        <img
-          src={goalTile.sprite}
-          alt="???"
-          className="h-12 w-12 object-contain"
-          style={{ filter: 'brightness(0) opacity(0.55)' }}
-        />
-      </div>
-      <div className="text-sm">
-        <div className="font-semibold text-slate-200">
-          Level {levelIndex + 1} — {familyName}
-        </div>
-        <div className="text-slate-400">Form a {goalTile.name}</div>
-      </div>
+    <div className="flex flex-col items-center leading-none">
+      <span className="text-[9px] text-slate-400">{label}</span>
+      <span className="text-sm font-bold">{value}</span>
     </div>
   )
 }
 
-function PowerBar({
+function Divider() {
+  return <div className="h-6 w-px shrink-0 bg-slate-700" />
+}
+
+function HeaderBar({
+  score,
+  bestScore,
+  goalTile,
+  nowTile,
+  nextTile,
   powers,
   charges,
   armedPower,
   inDanger,
-  onUse,
+  onUsePower,
 }: {
+  score: number
+  bestScore: number
+  goalTile: ReturnType<typeof getTile>
+  nowTile: ReturnType<typeof getTile>
+  nextTile: ReturnType<typeof getTile>
   powers: typeof POWERS
   charges: Record<PowerId, number>
   armedPower: PowerId | null
   inDanger: boolean
-  onUse: (id: PowerId) => void
+  onUsePower: (id: PowerId) => void
 }) {
   return (
     <div
-      className={`flex w-full max-w-[380px] items-center justify-center gap-2 rounded-lg px-3 py-2 transition-shadow ${
+      className={`flex w-full max-w-[380px] flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-lg px-2 py-2 transition-shadow ${
         inDanger ? 'bg-red-950/40 shadow-[0_0_0_2px_rgba(248,113,113,0.6)] animate-pulse' : 'bg-slate-800'
       }`}
     >
-      {inDanger && <span className="text-xs font-semibold text-red-300">Use a power!</span>}
-      {powers.map((power) => {
-        const count = charges[power.id] ?? 0
-        const disabled = count <= 0
-        const armed = armedPower === power.id
-        return (
-          <button
-            key={power.id}
-            disabled={disabled}
-            onClick={() => onUse(power.id)}
-            title={power.description}
-            className={`relative flex h-11 w-11 flex-col items-center justify-center rounded-full border text-lg transition-transform ${
-              disabled
-                ? 'border-slate-700 bg-slate-900 opacity-30'
-                : armed
-                  ? 'border-yellow-300 bg-yellow-400/20 scale-110'
-                  : 'border-slate-500 bg-slate-700 active:scale-95'
-            }`}
-          >
-            {power.id === 'pokeball' ? <PokeballIcon /> : power.icon}
-            <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[10px] font-semibold text-slate-200">
-              {count}
-            </span>
-          </button>
-        )
-      })}
+      <div className="flex items-center gap-1.5">
+        <Stat label="Score" value={score} />
+        <Stat label="Best" value={bestScore} />
+      </div>
+
+      <Divider />
+
+      <div className="flex items-center gap-1">
+        <img
+          src={goalTile.sprite}
+          alt="Goal"
+          className="h-6 w-6 object-contain"
+          style={{ filter: 'brightness(0) opacity(0.55)' }}
+        />
+        <span className="text-xs text-slate-300">{goalTile.name}</span>
+      </div>
+
+      <Divider />
+
+      <div className="flex items-center gap-1">
+        <img src={nowTile.sprite} alt={nowTile.name} className="h-6 w-6 object-contain" />
+        <img src={nextTile.sprite} alt={nextTile.name} className="h-4 w-4 object-contain opacity-60" />
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        {powers.map((power) => {
+          const count = charges[power.id] ?? 0
+          const disabled = count <= 0
+          const armed = armedPower === power.id
+          return (
+            <button
+              key={power.id}
+              disabled={disabled}
+              onClick={() => onUsePower(power.id)}
+              title={power.description}
+              className={`relative flex h-9 w-9 flex-col items-center justify-center rounded-full border text-base transition-transform ${
+                disabled
+                  ? 'border-slate-700 bg-slate-900 opacity-30'
+                  : armed
+                    ? 'border-yellow-300 bg-yellow-400/20 scale-110'
+                    : 'border-slate-500 bg-slate-700 active:scale-95'
+              }`}
+            >
+              {power.id === 'pokeball' ? <PokeballIcon /> : power.icon}
+              <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[9px] font-semibold text-slate-200">
+                {count}
+              </span>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
 function PokeballIcon() {
   return (
-    <svg viewBox="0 0 40 40" className="h-7 w-7" aria-hidden>
+    <svg viewBox="0 0 40 40" className="h-6 w-6" aria-hidden>
       <defs>
         <radialGradient id="pb-top" cx="35%" cy="30%" r="75%">
           <stop offset="0%" stopColor="#ff8a8a" />

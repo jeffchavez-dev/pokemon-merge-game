@@ -1,5 +1,5 @@
 import Matter from 'matter-js'
-import { FAMILIES, getTile, getFamily, GOAL_TIER, type Tile } from '../data/families'
+import { FAMILIES, getTile, getFamily, GOAL_TIER, MAX_TIER, type Tile } from '../data/families'
 import { POWERS, getPower, type PowerId } from '../data/powers'
 
 export const GAME_WIDTH = 380
@@ -15,9 +15,6 @@ const LEVEL_TRANSITION_MS = 1700
 const DANGER_ZONE_Y = GAME_OVER_LINE_Y + 140
 const THUNDER_RADIUS = 90
 const THUNDER_MAX_TARGETS = 3
-// Hidden for now — the charged/aura tiles still exist in the merge chain,
-// this just turns off their glow+ring rendering.
-const SHOW_CHARGED_GLOW = false
 const BOARD_BASE_BG = '#0f172a'
 
 type TilePlugin = {
@@ -27,7 +24,6 @@ type TilePlugin = {
   merging: boolean
   settleTimer: number
   isPreview?: boolean
-  isAura?: boolean
 }
 
 type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash'
@@ -285,7 +281,6 @@ export class PokemonMergeGame {
     })
 
     Matter.Events.on(this.render, 'afterRender', () => {
-      this.drawAuraGlow()
       this.drawGameOverLine()
       this.drawParticles()
       this.drawPokeballThrows()
@@ -364,54 +359,6 @@ export class PokemonMergeGame {
     ctx.lineTo(GAME_WIDTH, GAME_OVER_LINE_Y)
     ctx.stroke()
     ctx.restore()
-  }
-
-  private drawAuraGlow() {
-    if (!SHOW_CHARGED_GLOW) return
-    const ctx = this.render.context
-    const t = Date.now()
-    for (const body of this.engine.world.bodies) {
-      const plugin = pluginOf(body)
-      if (!plugin || !plugin.isAura || plugin.isPreview) continue
-      const color = getFamily(plugin.familyId).color
-      const pulse = 0.5 + 0.5 * Math.sin(t / 180 + body.id)
-      const baseRadius = body.circleRadius ?? 20
-      const ringInner = baseRadius * 0.92
-      const ringOuter = baseRadius * (1.55 + 0.3 * pulse)
-
-      ctx.save()
-      ctx.globalCompositeOperation = 'lighter'
-
-      // Soft halo ring that stays clear of the sprite itself.
-      const grad = ctx.createRadialGradient(
-        body.position.x,
-        body.position.y,
-        ringInner,
-        body.position.x,
-        body.position.y,
-        ringOuter,
-      )
-      grad.addColorStop(0, withAlpha(color, 0))
-      grad.addColorStop(0.45, withAlpha(color, 0.85))
-      grad.addColorStop(1, withAlpha(color, 0))
-      ctx.fillStyle = grad
-      ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, ringOuter, 0, Math.PI * 2)
-      ctx.fill()
-
-      // Crisp rotating dashed ring right at the sprite's edge for a
-      // clearly-charged look, distinct from the plain base sprite.
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.strokeStyle = withAlpha(color, 0.95)
-      ctx.lineWidth = 3
-      ctx.setLineDash([baseRadius * 0.35, baseRadius * 0.25])
-      ctx.lineDashOffset = -(t / 15) % 100
-      ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, baseRadius + 5, 0, Math.PI * 2)
-      ctx.stroke()
-
-      ctx.restore()
-    }
   }
 
   private drawParticles() {
@@ -681,7 +628,7 @@ export class PokemonMergeGame {
     if (!pa || !pb || pa.isPreview || pb.isPreview) return
     if (pa.merging || pb.merging) return
     if (pa.familyId !== pb.familyId || pa.tier !== pb.tier) return
-    if (pa.tier >= 6) return
+    if (pa.tier >= MAX_TIER) return
     pa.merging = true
     pb.merging = true
     this.pendingMerges.push([a, b])
@@ -727,7 +674,6 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
-      isAura: tile.isAura,
     })
     Matter.Body.setVelocity(newBody, { x: 0, y: -1.5 })
     Matter.Composite.add(this.engine.world, newBody)
@@ -1045,7 +991,7 @@ export class PokemonMergeGame {
     const groups = new Map<string, Matter.Body[]>()
     for (const body of bodies) {
       const plugin = pluginOf(body)!
-      if (plugin.tier >= 6) continue
+      if (plugin.tier >= MAX_TIER) continue
       const key = `${plugin.familyId}-${plugin.tier}`
       const list = groups.get(key) ?? []
       list.push(body)
