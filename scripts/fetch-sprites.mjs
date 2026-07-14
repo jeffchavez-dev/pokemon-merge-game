@@ -1,7 +1,16 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-const DEX_IDS = [172, 25, 26, 4, 5, 6, 7, 8, 9, 1, 2, 3, 10, 11, 12]
+const DEX_IDS = [
+  // Electric, Fire, Water, Grass, Bug
+  172, 25, 26, 4, 5, 6, 7, 8, 9, 1, 2, 3, 10, 11, 12,
+  // Normal, Fighting, Flying, Poison, Ground
+  506, 507, 508, 66, 67, 68, 16, 17, 18, 41, 42, 169, 328, 329, 330,
+  // Rock, Ghost, Dragon, Dark, Steel
+  74, 75, 76, 92, 93, 94, 147, 148, 149, 551, 552, 553, 304, 305, 306,
+  // Fairy, Ice, Psychic
+  173, 35, 36, 220, 221, 473, 63, 64, 65,
+]
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'public', 'pokemon')
 
 async function fetchSprite(dexId) {

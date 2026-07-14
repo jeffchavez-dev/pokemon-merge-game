@@ -46,6 +46,8 @@ function localSprite(dexId: number): string {
   return `/pokemon/${dexId}.png`
 }
 
+const collectedDexIds: number[] = []
+
 function buildFamily(
   id: string,
   name: string,
@@ -55,6 +57,7 @@ function buildFamily(
   capstoneName: string,
   glyph: string,
 ): Family {
+  collectedDexIds.push(...dexIds)
   const tiles: Tile[] = [0, 1, 2].map((tier) => ({
     id: `${id}-${tier}`,
     name: stageNames[tier],
@@ -125,9 +128,132 @@ export const FAMILIES: Family[] = [
     'Chitinox',
     '🦋',
   ),
+  buildFamily(
+    'normal',
+    'Normal',
+    '#a8a29e',
+    [506, 507, 508],
+    ['Lillipup', 'Herdier', 'Stoutland'],
+    'Omniform',
+    '⭐',
+  ),
+  buildFamily(
+    'fighting',
+    'Fighting',
+    '#b91c1c',
+    [66, 67, 68],
+    ['Machop', 'Machoke', 'Machamp'],
+    'Kravaxis',
+    '🥊',
+  ),
+  buildFamily(
+    'flying',
+    'Flying',
+    '#a5b4fc',
+    [16, 17, 18],
+    ['Pidgey', 'Pidgeotto', 'Pidgeot'],
+    'Aerovant',
+    '🕊️',
+  ),
+  buildFamily(
+    'poison',
+    'Poison',
+    '#c026d3',
+    [41, 42, 169],
+    ['Zubat', 'Golbat', 'Crobat'],
+    'Toxidra',
+    '☠️',
+  ),
+  buildFamily(
+    'ground',
+    'Ground',
+    '#ca8a04',
+    [328, 329, 330],
+    ['Trapinch', 'Vibrava', 'Flygon'],
+    'Dunevrai',
+    '⛰️',
+  ),
+  buildFamily(
+    'rock',
+    'Rock',
+    '#78716c',
+    [74, 75, 76],
+    ['Geodude', 'Graveler', 'Golem'],
+    'Terraclast',
+    '🪨',
+  ),
+  buildFamily(
+    'ghost',
+    'Ghost',
+    '#7c3aed',
+    [92, 93, 94],
+    ['Gastly', 'Haunter', 'Gengar'],
+    'Specthollow',
+    '👻',
+  ),
+  buildFamily(
+    'dragon',
+    'Dragon',
+    '#6366f1',
+    [147, 148, 149],
+    ['Dratini', 'Dragonair', 'Dragonite'],
+    'Wyrmveil',
+    '🐉',
+  ),
+  buildFamily(
+    'dark',
+    'Dark',
+    '#57534e',
+    [551, 552, 553],
+    ['Sandile', 'Krokorok', 'Krookodile'],
+    'Umbraleth',
+    '🌑',
+  ),
+  buildFamily(
+    'steel',
+    'Steel',
+    '#94a3b8',
+    [304, 305, 306],
+    ['Aron', 'Lairon', 'Aggron'],
+    'Ferrolith',
+    '⚙️',
+  ),
+  buildFamily(
+    'fairy',
+    'Fairy',
+    '#f0abfc',
+    [173, 35, 36],
+    ['Cleffa', 'Clefairy', 'Clefable'],
+    'Fayendra',
+    '✨',
+  ),
+  buildFamily(
+    'ice',
+    'Ice',
+    '#67e8f9',
+    [220, 221, 473],
+    ['Swinub', 'Piloswine', 'Mamoswine'],
+    'Glacindra',
+    '❄️',
+  ),
+  buildFamily(
+    'psychic',
+    'Psychic',
+    '#f472b6',
+    [63, 64, 65],
+    ['Abra', 'Kadabra', 'Alakazam'],
+    'Psywarden',
+    '🔮',
+  ),
 ]
 
-export const ALL_DEX_IDS = [172, 25, 26, 4, 5, 6, 7, 8, 9, 1, 2, 3, 10, 11, 12]
+export const ALL_DEX_IDS = Array.from(new Set(collectedDexIds))
+
+// Levels loop through the roster forever — level N's family is
+// FAMILIES[N % FAMILIES.length], so the game never runs out of content.
+export function getLevelFamily(levelIndex: number): Family {
+  return FAMILIES[levelIndex % FAMILIES.length]
+}
 
 export function getTile(familyId: string, tier: number): Tile {
   const family = FAMILIES.find((f) => f.id === familyId)!

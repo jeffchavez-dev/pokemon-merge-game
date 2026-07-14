@@ -1,19 +1,20 @@
 import Matter from 'matter-js'
-import { FAMILIES, getTile, getFamily, GOAL_TIER, MAX_TIER, type Tile } from '../data/families'
+import { FAMILIES, getTile, getFamily, getLevelFamily, GOAL_TIER, MAX_TIER, type Tile } from '../data/families'
 import { POWERS, getPower, type PowerId } from '../data/powers'
 
-export const GAME_WIDTH = 380
-export const GAME_HEIGHT = 520
+// The tile radii / spacing in families.ts were tuned assuming a board this
+// wide. Every board is scaled relative to this reference so the game feels
+// consistent whether it's rendered on a small phone or a wide tablet.
+const REFERENCE_WIDTH = 380
+const MIN_WIDTH = 240
+const MIN_HEIGHT = 320
 
-const WALL_THICKNESS = 24
-const DROP_Y = 46
-const GAME_OVER_LINE_Y = 118
 const GAME_OVER_GRACE_MS = 1200
 const DROP_COOLDOWN_MS = 450
 const RESTING_SPEED = 0.15
+const CELEBRATION_MS = 1500
 const LEVEL_TRANSITION_MS = 1700
-const DANGER_ZONE_Y = GAME_OVER_LINE_Y + 140
-const THUNDER_RADIUS = 90
+const CYCLE_BANNER_MS = 2200
 const THUNDER_MAX_TARGETS = 3
 const BOARD_BASE_BG = '#0f172a'
 
@@ -50,6 +51,14 @@ type LightningStrike = {
   flicker: number
 }
 
+type Celebration = {
+  x: number
+  y: number
+  t: number
+  duration: number
+  familyId: string
+}
+
 type Particle = {
   x: number
   y: number
@@ -77,16 +86,13 @@ export interface GameCallbacks {
   onScoreChange: (score: number) => void
   onLevelChange: (levelIndex: number, familyId: string) => void
   onLevelComplete: (levelIndex: number) => void
+  onCycleComplete: (cycleNumber: number) => void
   onGameOver: (finalScore: number) => void
-  onGameComplete: (finalScore: number) => void
   onQueueChange: (dropFamilyId: string, nextFamilyId: string) => void
   onPowerChargesChange: (charges: Record<PowerId, number>) => void
   onArmedPowerChange: (powerId: PowerId | null) => void
   onDangerChange: (inDanger: boolean) => void
-}
-
-function spriteScale(tile: Tile): number {
-  return (tile.radius * 2) / tile.spriteSize
+  onDiscovered: (familyId: string, tier: number) => void
 }
 
 function rand(min: number, max: number) {
@@ -203,10 +209,23 @@ export class PokemonMergeGame {
   private particles: Particle[] = []
   private pokeballThrows: PokeballThrow[] = []
   private lightningStrikes: LightningStrike[] = []
+  private celebration: Celebration | null = null
+  private discovered = new Set<string>()
+
+  // Real measured board size (device viewport driven) and the scale factor
+  // relative to the reference design width the tile radii were tuned for.
+  private width: number
+  private height: number
+  private scale: number
+  private wallThickness: number
+  private dropY: number
+  private gameOverLineY: number
+  private dangerZoneY: number
+  private thunderRadius: number
 
   private levelIndex = 0
   private score = 0
-  private aimX = GAME_WIDTH / 2
+  private aimX = 0
   private canDrop = true
   private gameOver = false
   private frozen = false
@@ -219,18 +238,30 @@ export class PokemonMergeGame {
   constructor(container: HTMLElement, callbacks: GameCallbacks) {
     this.container = container
     this.callbacks = callbacks
+
+    const rect = container.getBoundingClientRect()
+    this.width = Math.max(MIN_WIDTH, Math.round(rect.width) || REFERENCE_WIDTH)
+    this.height = Math.max(MIN_HEIGHT, Math.round(rect.height) || 520)
+    this.scale = this.width / REFERENCE_WIDTH
+    this.wallThickness = 24 * this.scale
+    this.dropY = this.height * (46 / 520)
+    this.gameOverLineY = this.height * (118 / 520)
+    this.dangerZoneY = this.gameOverLineY + 140 * this.scale
+    this.thunderRadius = 90 * this.scale
+    this.aimX = this.width / 2
+
     this.initWorld()
     this.startLevel(0, false)
   }
 
   private initWorld() {
-    this.engine = Matter.Engine.create({ gravity: { x: 0, y: 1.05 } })
+    this.engine = Matter.Engine.create({ gravity: { x: 0, y: 1.05 * this.scale } })
     this.render = Matter.Render.create({
       element: this.container,
       engine: this.engine,
       options: {
-        width: GAME_WIDTH,
-        height: GAME_HEIGHT,
+        width: this.width,
+        height: this.height,
         wireframes: false,
         background: '#1e293b',
       },
@@ -242,27 +273,10 @@ export class PokemonMergeGame {
       friction: 0.4,
       render: { fillStyle: '#334155' },
     }
-    const floor = Matter.Bodies.rectangle(
-      GAME_WIDTH / 2,
-      GAME_HEIGHT + WALL_THICKNESS / 2,
-      GAME_WIDTH + WALL_THICKNESS * 2,
-      WALL_THICKNESS,
-      wallOptions,
-    )
-    const leftWall = Matter.Bodies.rectangle(
-      -WALL_THICKNESS / 2,
-      GAME_HEIGHT / 2,
-      WALL_THICKNESS,
-      GAME_HEIGHT * 2,
-      wallOptions,
-    )
-    const rightWall = Matter.Bodies.rectangle(
-      GAME_WIDTH + WALL_THICKNESS / 2,
-      GAME_HEIGHT / 2,
-      WALL_THICKNESS,
-      GAME_HEIGHT * 2,
-      wallOptions,
-    )
+    const t = this.wallThickness
+    const floor = Matter.Bodies.rectangle(this.width / 2, this.height + t / 2, this.width + t * 2, t, wallOptions)
+    const leftWall = Matter.Bodies.rectangle(-t / 2, this.height / 2, t, this.height * 2, wallOptions)
+    const rightWall = Matter.Bodies.rectangle(this.width + t / 2, this.height / 2, t, this.height * 2, wallOptions)
     Matter.Composite.add(this.engine.world, [floor, leftWall, rightWall])
 
     Matter.Events.on(this.engine, 'collisionStart', (event) => {
@@ -276,6 +290,7 @@ export class PokemonMergeGame {
       this.updateParticles()
       this.updatePokeballThrows()
       this.updateLightningStrikes()
+      this.updateCelebration()
       this.updateDangerState()
       this.checkGameOver()
     })
@@ -285,6 +300,7 @@ export class PokemonMergeGame {
       this.drawParticles()
       this.drawPokeballThrows()
       this.drawLightningStrikes()
+      this.drawCelebration()
     })
 
     Matter.Render.run(this.render)
@@ -292,13 +308,22 @@ export class PokemonMergeGame {
   }
 
   private currentFamily() {
-    return FAMILIES[this.levelIndex]
+    return getLevelFamily(this.levelIndex)
+  }
+
+  private radius(tile: Tile): number {
+    return tile.radius * this.scale
+  }
+
+  private spriteScale(tile: Tile): number {
+    return (this.radius(tile) * 2) / tile.spriteSize
   }
 
   // The families a player can drop during this level: the level's target
-  // family plus every family from earlier, completed levels.
+  // family plus every family from earlier levels (capped once the full
+  // roster has appeared, rather than resetting when the roster loops).
   private activePool() {
-    return FAMILIES.slice(0, this.levelIndex + 1)
+    return FAMILIES.slice(0, Math.min(this.levelIndex + 1, FAMILIES.length))
   }
 
   private randomPoolFamilyId(): string {
@@ -312,7 +337,8 @@ export class PokemonMergeGame {
     return charges
   }
 
-  // Powers a player has unlocked so far (one unlocks per level).
+  // Powers a player has unlocked so far (one unlocks per level, capped once
+  // the whole roster is unlocked).
   activePowers() {
     return POWERS.filter((p) => p.unlockLevel <= this.levelIndex)
   }
@@ -325,6 +351,7 @@ export class PokemonMergeGame {
     this.particles = []
     this.pokeballThrows = []
     this.lightningStrikes = []
+    this.celebration = null
     this.armedPower = null
     this.powerCharges = this.freshCharges()
     this.isDanger = false
@@ -334,7 +361,7 @@ export class PokemonMergeGame {
     Matter.Composite.remove(this.engine.world, dynamicBodies)
     this.previewBody = null
 
-    this.aimX = GAME_WIDTH / 2
+    this.aimX = this.width / 2
     this.dropFamilyId = this.randomPoolFamilyId()
     this.nextDropFamilyId = this.randomPoolFamilyId()
     this.spawnPreview()
@@ -348,6 +375,13 @@ export class PokemonMergeGame {
     this.callbacks.onDangerChange(false)
   }
 
+  private markDiscovered(familyId: string, tier: number) {
+    const key = `${familyId}-${tier}`
+    if (this.discovered.has(key)) return
+    this.discovered.add(key)
+    this.callbacks.onDiscovered(familyId, tier)
+  }
+
   private drawGameOverLine() {
     const ctx = this.render.context
     ctx.save()
@@ -355,8 +389,8 @@ export class PokemonMergeGame {
     ctx.lineWidth = 2
     ctx.setLineDash([8, 6])
     ctx.beginPath()
-    ctx.moveTo(0, GAME_OVER_LINE_Y)
-    ctx.lineTo(GAME_WIDTH, GAME_OVER_LINE_Y)
+    ctx.moveTo(0, this.gameOverLineY)
+    ctx.lineTo(this.width, this.gameOverLineY)
     ctx.stroke()
     ctx.restore()
   }
@@ -430,12 +464,13 @@ export class PokemonMergeGame {
   }
 
   private spawnMergeEffect(familyId: string, x: number, y: number) {
+    const s = this.scale
     const color = getFamily(familyId).color
     switch (familyId) {
       case 'electric':
         for (let i = 0; i < 10; i++) {
           const angle = rand(0, Math.PI * 2)
-          const speed = rand(3, 7)
+          const speed = rand(3, 7) * s
           this.particles.push({
             x,
             y,
@@ -444,7 +479,7 @@ export class PokemonMergeGame {
             gravity: 0,
             life: rand(150, 300),
             maxLife: 300,
-            size: 2,
+            size: 2 * s,
             color: '#fef08a',
             kind: 'spark',
             angle: 0,
@@ -454,14 +489,14 @@ export class PokemonMergeGame {
       case 'fire':
         for (let i = 0; i < 12; i++) {
           this.particles.push({
-            x: x + rand(-6, 6),
-            y: y + rand(-4, 4),
-            vx: rand(-1, 1),
-            vy: rand(-3.5, -1.5),
+            x: x + rand(-6, 6) * s,
+            y: y + rand(-4, 4) * s,
+            vx: rand(-1, 1) * s,
+            vy: rand(-3.5, -1.5) * s,
             gravity: -0.02,
             life: rand(400, 700),
             maxLife: 700,
-            size: rand(3, 6),
+            size: rand(3, 6) * s,
             color: Math.random() > 0.5 ? '#f97316' : '#fde047',
             kind: 'ember',
             angle: 0,
@@ -477,14 +512,14 @@ export class PokemonMergeGame {
           gravity: 0,
           life: 500,
           maxLife: 500,
-          size: 10,
+          size: 10 * s,
           color,
           kind: 'ring',
           angle: 0,
         })
         for (let i = 0; i < 8; i++) {
           const angle = rand(Math.PI * 0.15, Math.PI * 0.85)
-          const speed = rand(2, 5)
+          const speed = rand(2, 5) * s
           this.particles.push({
             x,
             y,
@@ -493,7 +528,7 @@ export class PokemonMergeGame {
             gravity: 0.35,
             life: rand(400, 650),
             maxLife: 650,
-            size: rand(2, 4),
+            size: rand(2, 4) * s,
             color: '#38bdf8',
             kind: 'drop',
             angle: 0,
@@ -503,7 +538,7 @@ export class PokemonMergeGame {
       case 'grass':
         for (let i = 0; i < 9; i++) {
           const angle = rand(0, Math.PI * 2)
-          const speed = rand(1.5, 3.5)
+          const speed = rand(1.5, 3.5) * s
           this.particles.push({
             x,
             y,
@@ -512,27 +547,29 @@ export class PokemonMergeGame {
             gravity: 0.05,
             life: rand(500, 800),
             maxLife: 800,
-            size: rand(4, 7),
+            size: rand(4, 7) * s,
             color: '#4ade80',
             kind: 'leaf',
             angle: rand(0, Math.PI * 2),
           })
         }
         break
-      case 'bug':
+      // All newer type families share a generic sparkle/glow burst in their
+      // own color, rather than needing a bespoke effect per type.
+      default:
         for (let i = 0; i < 10; i++) {
           const angle = rand(0, Math.PI * 2)
-          const speed = rand(1, 3)
+          const speed = rand(1.5, 4) * s
           this.particles.push({
             x,
             y,
             vx: Math.cos(angle) * speed,
             vy: Math.sin(angle) * speed - 0.5,
-            gravity: 0.02,
-            life: rand(300, 550),
-            maxLife: 550,
-            size: rand(1.5, 3),
-            color: '#a3e635',
+            gravity: 0.03,
+            life: rand(350, 600),
+            maxLife: 600,
+            size: rand(2, 4) * s,
+            color,
             kind: 'dust',
             angle: 0,
           })
@@ -546,14 +583,14 @@ export class PokemonMergeGame {
       Matter.Composite.remove(this.engine.world, this.previewBody)
     }
     const tile = getTile(this.dropFamilyId, 0)
-    const body = Matter.Bodies.circle(this.aimX, DROP_Y, tile.radius, {
+    const body = Matter.Bodies.circle(this.aimX, this.dropY, this.radius(tile), {
       isStatic: true,
       isSensor: true,
       render: {
         sprite: {
           texture: tile.sprite,
-          xScale: spriteScale(tile),
-          yScale: spriteScale(tile),
+          xScale: this.spriteScale(tile),
+          yScale: this.spriteScale(tile),
         },
         opacity: 0.55,
       },
@@ -573,22 +610,20 @@ export class PokemonMergeGame {
   setAimX(clientX: number, rect: DOMRect) {
     if (this.gameOver || this.frozen) return
     const tile = getTile(this.dropFamilyId, 0)
-    const ratio = GAME_WIDTH / rect.width
+    const ratio = this.width / rect.width
     const rawX = (clientX - rect.left) * ratio
-    const clamped = Math.min(
-      GAME_WIDTH - WALL_THICKNESS / 2 - tile.radius,
-      Math.max(WALL_THICKNESS / 2 + tile.radius, rawX),
-    )
+    const r = this.radius(tile)
+    const clamped = Math.min(this.width - this.wallThickness / 2 - r, Math.max(this.wallThickness / 2 + r, rawX))
     this.aimX = clamped
     if (this.previewBody) {
-      Matter.Body.setPosition(this.previewBody, { x: clamped, y: DROP_Y })
+      Matter.Body.setPosition(this.previewBody, { x: clamped, y: this.dropY })
     }
   }
 
   drop() {
     if (this.gameOver || this.frozen || !this.canDrop) return
     const tile = getTile(this.dropFamilyId, 0)
-    const body = Matter.Bodies.circle(this.aimX, DROP_Y, tile.radius, {
+    const body = Matter.Bodies.circle(this.aimX, this.dropY, this.radius(tile), {
       restitution: 0.15,
       friction: 0.2,
       frictionAir: 0.0015,
@@ -596,8 +631,8 @@ export class PokemonMergeGame {
       render: {
         sprite: {
           texture: tile.sprite,
-          xScale: spriteScale(tile),
-          yScale: spriteScale(tile),
+          xScale: this.spriteScale(tile),
+          yScale: this.spriteScale(tile),
         },
       },
     })
@@ -609,6 +644,7 @@ export class PokemonMergeGame {
       settleTimer: 0,
     })
     Matter.Composite.add(this.engine.world, body)
+    this.markDiscovered(tile.familyId, tile.tier)
 
     this.dropFamilyId = this.nextDropFamilyId
     this.nextDropFamilyId = this.randomPoolFamilyId()
@@ -655,7 +691,7 @@ export class PokemonMergeGame {
 
     const newTier = pa.tier + 1
     const tile = getTile(pa.familyId, newTier)
-    const newBody = Matter.Bodies.circle(midX, midY, tile.radius, {
+    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
       restitution: 0.15,
       friction: 0.2,
       frictionAir: 0.0015,
@@ -663,8 +699,8 @@ export class PokemonMergeGame {
       render: {
         sprite: {
           texture: tile.sprite,
-          xScale: spriteScale(tile),
-          yScale: spriteScale(tile),
+          xScale: this.spriteScale(tile),
+          yScale: this.spriteScale(tile),
         },
       },
     })
@@ -675,30 +711,90 @@ export class PokemonMergeGame {
       merging: false,
       settleTimer: 0,
     })
-    Matter.Body.setVelocity(newBody, { x: 0, y: -1.5 })
+    Matter.Body.setVelocity(newBody, { x: 0, y: -1.5 * this.scale })
     Matter.Composite.add(this.engine.world, newBody)
+    this.markDiscovered(tile.familyId, tile.tier)
 
     this.score += tile.scoreValue
     this.callbacks.onScoreChange(this.score)
 
     if (newTier === GOAL_TIER && tile.familyId === this.currentFamily().id) {
-      this.completeLevel()
+      this.beginCelebration(tile.familyId, midX, midY)
       return true
     }
     return false
   }
 
-  private completeLevel() {
+  // Goal reached: freeze the board and let the newly-formed Pokemon sit
+  // there with a celebratory burst before the "Level Complete" banner
+  // appears, so the player actually gets to see what they made.
+  private beginCelebration(familyId: string, x: number, y: number) {
     this.frozen = true
-    this.callbacks.onLevelComplete(this.levelIndex)
+    this.celebration = { x, y, t: 0, duration: CELEBRATION_MS, familyId }
+    this.spawnCelebrationEffect(familyId, x, y)
+
     setTimeout(() => {
-      const nextIndex = this.levelIndex + 1
-      if (nextIndex >= FAMILIES.length) {
-        this.callbacks.onGameComplete(this.score)
-      } else {
-        this.startLevel(nextIndex, true)
-      }
-    }, LEVEL_TRANSITION_MS)
+      this.celebration = null
+      this.callbacks.onLevelComplete(this.levelIndex)
+      setTimeout(() => {
+        const nextIndex = this.levelIndex + 1
+        const wrapsToNewCycle = nextIndex > 0 && nextIndex % FAMILIES.length === 0
+        if (wrapsToNewCycle) {
+          this.callbacks.onCycleComplete(nextIndex / FAMILIES.length)
+          setTimeout(() => this.startLevel(nextIndex, true), CYCLE_BANNER_MS)
+        } else {
+          this.startLevel(nextIndex, true)
+        }
+      }, LEVEL_TRANSITION_MS)
+    }, CELEBRATION_MS)
+  }
+
+  private updateCelebration() {
+    if (!this.celebration) return
+    const dt = this.engine.timing.lastDelta || 16.666
+    this.celebration.t += dt
+  }
+
+  private drawCelebration() {
+    if (!this.celebration) return
+    const { x, y, t, familyId } = this.celebration
+    const color = getFamily(familyId).color
+    const ctx = this.render.context
+    ctx.save()
+    for (let i = 0; i < 3; i++) {
+      const ringT = (t - i * 220) / 650
+      if (ringT <= 0 || ringT >= 1) continue
+      const ringRadius = (18 + ringT * 70) * this.scale
+      ctx.globalAlpha = (1 - ringT) * 0.8
+      ctx.strokeStyle = color
+      ctx.lineWidth = 3 * this.scale
+      ctx.beginPath()
+      ctx.arc(x, y, ringRadius, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  private spawnCelebrationEffect(familyId: string, x: number, y: number) {
+    const s = this.scale
+    const color = getFamily(familyId).color
+    for (let i = 0; i < 26; i++) {
+      const angle = rand(0, Math.PI * 2)
+      const speed = rand(2, 6) * s
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - rand(1, 3) * s,
+        gravity: 0.12,
+        life: rand(700, 1300),
+        maxLife: 1300,
+        size: rand(2.5, 5) * s,
+        color: Math.random() > 0.5 ? color : '#ffffff',
+        kind: Math.random() > 0.5 ? 'dust' : 'leaf',
+        angle: rand(0, Math.PI * 2),
+      })
+    }
   }
 
   private checkGameOver() {
@@ -709,7 +805,7 @@ export class PokemonMergeGame {
       if (!plugin || plugin.isPreview || body.isStatic) continue
       const topY = body.position.y - (body.circleRadius ?? 0)
       const speed = Matter.Body.getSpeed(body)
-      if (topY < GAME_OVER_LINE_Y && speed < RESTING_SPEED) {
+      if (topY < this.gameOverLineY && speed < RESTING_SPEED) {
         plugin.settleTimer += delta
         if (plugin.settleTimer > GAME_OVER_GRACE_MS) {
           this.triggerGameOver()
@@ -740,7 +836,7 @@ export class PokemonMergeGame {
       const speed = Matter.Body.getSpeed(body)
       // Only settled (resting) pieces count — a freshly dropped piece is
       // still falling through this zone and shouldn't trigger a false alarm.
-      if (topY < DANGER_ZONE_Y && speed < RESTING_SPEED) {
+      if (topY < this.dangerZoneY && speed < RESTING_SPEED) {
         danger = true
         break
       }
@@ -788,8 +884,8 @@ export class PokemonMergeGame {
   resolveBoardTap(clientX: number, clientY: number, rect: DOMRect): boolean {
     if (!this.armedPower) return false
     const id = this.armedPower
-    const ratioX = GAME_WIDTH / rect.width
-    const ratioY = GAME_HEIGHT / rect.height
+    const ratioX = this.width / rect.width
+    const ratioY = this.height / rect.height
     const x = (clientX - rect.left) * ratioX
     const y = (clientY - rect.top) * ratioY
 
@@ -833,8 +929,8 @@ export class PokemonMergeGame {
       }
     }
     this.pokeballThrows.push({
-      startX: GAME_WIDTH / 2,
-      startY: GAME_HEIGHT + 24,
+      startX: this.width / 2,
+      startY: this.height + 24 * this.scale,
       endX: closest.position.x,
       endY: closest.position.y,
       t: 0,
@@ -866,7 +962,7 @@ export class PokemonMergeGame {
   private drawPokeballThrows() {
     if (this.pokeballThrows.length === 0) return
     const ctx = this.render.context
-    const arcHeight = 100
+    const arcHeight = 100 * this.scale
     for (const throwObj of this.pokeballThrows) {
       const t = Math.min(1, throwObj.t / throwObj.duration)
       const x = throwObj.startX + (throwObj.endX - throwObj.startX) * t
@@ -882,18 +978,26 @@ export class PokemonMergeGame {
       ctx.globalAlpha = 0.32 * shadowScale
       ctx.fillStyle = '#000000'
       ctx.beginPath()
-      ctx.ellipse(x, groundY + 6, 11 * shadowScale, 4.5 * shadowScale, 0, 0, Math.PI * 2)
+      ctx.ellipse(
+        x,
+        groundY + 6 * this.scale,
+        11 * shadowScale * this.scale,
+        4.5 * shadowScale * this.scale,
+        0,
+        0,
+        Math.PI * 2,
+      )
       ctx.fill()
       ctx.restore()
 
-      drawPokeballShape(ctx, x, y, 13 * scale, t * Math.PI * 7)
+      drawPokeballShape(ctx, x, y, 13 * scale * this.scale, t * Math.PI * 7)
     }
   }
 
   private useThunderStrike(x: number, y: number): boolean {
     const bodies = this.dynamicBodies()
       .map((body) => ({ body, d: (body.position.x - x) ** 2 + (body.position.y - y) ** 2 }))
-      .filter(({ d }) => d <= THUNDER_RADIUS * THUNDER_RADIUS)
+      .filter(({ d }) => d <= this.thunderRadius * this.thunderRadius)
       .sort((a, b) => a.d - b.d)
       .slice(0, THUNDER_MAX_TARGETS)
     if (bodies.length === 0) return false
@@ -920,7 +1024,7 @@ export class PokemonMergeGame {
     for (let i = 0; i <= segments; i++) {
       const progress = i / segments
       const y = targetY * progress
-      const spread = (1 - progress) * 26 + 6
+      const spread = ((1 - progress) * 26 + 6) * this.scale
       const x = i === segments ? targetX : targetX + rand(-spread, spread)
       points.push({ x, y })
     }
@@ -959,7 +1063,7 @@ export class PokemonMergeGame {
 
       // Soft outer glow.
       ctx.strokeStyle = '#fde047'
-      ctx.lineWidth = 9
+      ctx.lineWidth = 9 * this.scale
       ctx.globalCompositeOperation = 'lighter'
       ctx.beginPath()
       strike.path.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
@@ -967,7 +1071,7 @@ export class PokemonMergeGame {
 
       // Bright core.
       ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = 3
+      ctx.lineWidth = 3 * this.scale
       ctx.beginPath()
       strike.path.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
       ctx.stroke()
@@ -979,10 +1083,10 @@ export class PokemonMergeGame {
     const bodies = this.dynamicBodies()
     if (bodies.length === 0) return false
     for (const body of bodies) {
-      Matter.Body.setVelocity(body, { x: rand(-7, 7), y: rand(-9, -4) })
+      Matter.Body.setVelocity(body, { x: rand(-7, 7) * this.scale, y: rand(-9, -4) * this.scale })
       Matter.Body.setAngularVelocity(body, rand(-0.2, 0.2))
     }
-    this.spawnMergeEffect('water', GAME_WIDTH / 2, GAME_HEIGHT * 0.4)
+    this.spawnMergeEffect('water', this.width / 2, this.height * 0.4)
     return true
   }
 
@@ -1025,7 +1129,7 @@ export class PokemonMergeGame {
   private spawnPokeballEffect(x: number, y: number) {
     for (let i = 0; i < 10; i++) {
       const angle = rand(0, Math.PI * 2)
-      const speed = rand(1.5, 4)
+      const speed = rand(1.5, 4) * this.scale
       this.particles.push({
         x,
         y,
@@ -1034,7 +1138,7 @@ export class PokemonMergeGame {
         gravity: 0.15,
         life: rand(300, 500),
         maxLife: 500,
-        size: rand(2, 4),
+        size: rand(2, 4) * this.scale,
         color: Math.random() > 0.5 ? '#ef4444' : '#f8fafc',
         kind: 'dust',
         angle: 0,
@@ -1051,7 +1155,7 @@ export class PokemonMergeGame {
       gravity: 0,
       life: 220,
       maxLife: 220,
-      size: 6,
+      size: 6 * this.scale,
       color: '#ffffff',
       kind: 'flash',
       angle: 0,
@@ -1068,7 +1172,7 @@ export class PokemonMergeGame {
         gravity: 0,
         life: 380 - delay,
         maxLife: 380,
-        size: 8,
+        size: 8 * this.scale,
         color,
         kind: 'ring',
         angle: 0,
