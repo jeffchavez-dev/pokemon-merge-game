@@ -10,6 +10,10 @@ const DEX_IDS = [
   74, 75, 76, 92, 93, 94, 147, 148, 149, 551, 552, 553, 304, 305, 306,
   // Fairy, Ice, Psychic
   173, 35, 36, 220, 221, 473, 63, 64, 65,
+  // Gen 6 (Kalos): Chespin, Fennekin, Froakie, Fletchling, Scatterbug,
+  // Flabébé, Honedge, Goomy lines
+  650, 651, 652, 653, 654, 655, 656, 657, 658, 661, 662, 663, 664, 665, 666,
+  669, 670, 671, 679, 680, 681, 704, 705, 706,
 ]
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'public', 'pokemon')
 
