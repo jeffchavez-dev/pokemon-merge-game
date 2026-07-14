@@ -17,6 +17,12 @@ const LEVEL_TRANSITION_MS = 1700
 const CYCLE_BANNER_MS = 2200
 const THUNDER_MAX_TARGETS = 3
 const BOARD_BASE_BG = '#0f172a'
+const EXPLOSION_MS = 650
+const EXPLOSION_COOLDOWN_MS = 900
+// Capstones can't merge further, so two of them colliding is a dedicated
+// "boom" moment instead: a blast radius that crushes whatever weaker pieces
+// are caught nearby, rather than the two just bouncing off each other.
+const CAPSTONE_BLAST_RADIUS = 170
 
 type TilePlugin = {
   tileId: string
@@ -25,6 +31,7 @@ type TilePlugin = {
   merging: boolean
   settleTimer: number
   isPreview?: boolean
+  explodeCooldown?: number
 }
 
 type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash'
@@ -60,6 +67,13 @@ type Celebration = {
 }
 
 type TidalWaveEffect = {
+  t: number
+  duration: number
+}
+
+type ExplosionEffect = {
+  x: number
+  y: number
   t: number
   duration: number
 }
@@ -213,11 +227,13 @@ export class PokemonMergeGame {
   private runner!: Matter.Runner
   private previewBody: Matter.Body | null = null
   private pendingMerges: Array<[Matter.Body, Matter.Body]> = []
+  private pendingExplosions: Array<[Matter.Body, Matter.Body]> = []
   private particles: Particle[] = []
   private pokeballThrows: PokeballThrow[] = []
   private lightningStrikes: LightningStrike[] = []
   private celebration: Celebration | null = null
   private waveEffect: TidalWaveEffect | null = null
+  private explosions: ExplosionEffect[] = []
   private discovered = new Set<string>()
 
   // Real measured board size (device viewport driven) and the scale factor
@@ -299,12 +315,15 @@ export class PokemonMergeGame {
     })
 
     Matter.Events.on(this.engine, 'afterUpdate', () => {
+      this.processPendingExplosions()
       this.processPendingMerges()
+      this.updateExplodeCooldowns()
       this.updateParticles()
       this.updatePokeballThrows()
       this.updateLightningStrikes()
       this.updateCelebration()
       this.updateTidalWave()
+      this.updateExplosions()
       this.updateDangerState()
       this.checkGameOver()
     })
@@ -316,6 +335,7 @@ export class PokemonMergeGame {
       this.drawLightningStrikes()
       this.drawCelebration()
       this.drawTidalWave()
+      this.drawExplosions()
     })
 
     Matter.Render.run(this.render)
@@ -409,6 +429,8 @@ export class PokemonMergeGame {
     this.lightningStrikes = []
     this.celebration = null
     this.waveEffect = null
+    this.explosions = []
+    this.pendingExplosions = []
     this.armedPower = null
     this.powerCharges = this.freshCharges()
     this.isDanger = false
@@ -725,6 +747,17 @@ export class PokemonMergeGame {
     const pa = pluginOf(a)
     const pb = pluginOf(b)
     if (!pa || !pb || pa.isPreview || pb.isPreview) return
+
+    // Two capstones can't merge into anything further — instead, any pair of
+    // them slamming together (same family or not) sets off a blast that
+    // crushes weaker pieces nearby, so it's still a dramatic moment rather
+    // than a dead end.
+    if (pa.tier >= MAX_TIER && pb.tier >= MAX_TIER) {
+      if ((pa.explodeCooldown ?? 0) > 0 || (pb.explodeCooldown ?? 0) > 0) return
+      this.pendingExplosions.push([a, b])
+      return
+    }
+
     if (pa.merging || pb.merging) return
     if (pa.familyId !== pb.familyId || pa.tier !== pb.tier) return
     if (pa.tier >= MAX_TIER) return
@@ -740,6 +773,130 @@ export class PokemonMergeGame {
     for (const [a, b] of merges) {
       if (!this.engine.world.bodies.includes(a) || !this.engine.world.bodies.includes(b)) continue
       if (this.applyMerge(a, b)) return
+    }
+  }
+
+  private processPendingExplosions() {
+    if (this.pendingExplosions.length === 0 || this.frozen) return
+    const explosions = this.pendingExplosions
+    this.pendingExplosions = []
+    for (const [a, b] of explosions) {
+      if (!this.engine.world.bodies.includes(a) || !this.engine.world.bodies.includes(b)) continue
+      this.applyCapstoneExplosion(a, b)
+    }
+  }
+
+  // Two capstones collided: they survive (there's no further tier to merge
+  // into) and knock apart, but everything weaker caught inside the blast
+  // radius gets crushed for a partial score payout.
+  private applyCapstoneExplosion(a: Matter.Body, b: Matter.Body) {
+    const pa = pluginOf(a)!
+    const pb = pluginOf(b)!
+    pa.explodeCooldown = EXPLOSION_COOLDOWN_MS
+    pb.explodeCooldown = EXPLOSION_COOLDOWN_MS
+
+    const midX = (a.position.x + b.position.x) / 2
+    const midY = (a.position.y + b.position.y) / 2
+    const blastRadius = CAPSTONE_BLAST_RADIUS * this.scale
+
+    const casualties = this.dynamicBodies().filter((body) => {
+      if (body === a || body === b) return false
+      const dx = body.position.x - midX
+      const dy = body.position.y - midY
+      return dx * dx + dy * dy <= blastRadius * blastRadius
+    })
+
+    for (const body of casualties) {
+      const plugin = pluginOf(body)!
+      const tile = getTile(plugin.familyId, plugin.tier)
+      this.score += Math.max(1, Math.round(tile.scoreValue / 2))
+      this.spawnMergeEffect(plugin.familyId, body.position.x, body.position.y)
+      Matter.Composite.remove(this.engine.world, body)
+    }
+    if (casualties.length > 0) this.callbacks.onScoreChange(this.score)
+
+    const dx = a.position.x - b.position.x || rand(-1, 1)
+    const dy = a.position.y - b.position.y || 0
+    const dist = Math.hypot(dx, dy) || 1
+    const kick = 7 * this.scale
+    Matter.Body.setVelocity(a, { x: (dx / dist) * kick, y: (dy / dist) * kick - 2 * this.scale })
+    Matter.Body.setVelocity(b, { x: (-dx / dist) * kick, y: (-dy / dist) * kick - 2 * this.scale })
+
+    this.explosions.push({ x: midX, y: midY, t: 0, duration: EXPLOSION_MS })
+    this.spawnExplosionParticles(midX, midY)
+  }
+
+  private updateExplodeCooldowns() {
+    const dt = this.engine.timing.lastDelta || 16.666
+    for (const body of this.engine.world.bodies) {
+      const plugin = pluginOf(body)
+      if (!plugin || !plugin.explodeCooldown) continue
+      plugin.explodeCooldown = Math.max(0, plugin.explodeCooldown - dt)
+    }
+  }
+
+  private updateExplosions() {
+    if (this.explosions.length === 0) return
+    const dt = this.engine.timing.lastDelta || 16.666
+    this.explosions = this.explosions.filter((e) => {
+      e.t += dt
+      return e.t < e.duration
+    })
+  }
+
+  private drawExplosions() {
+    if (this.explosions.length === 0) return
+    const ctx = this.render.context
+    for (const e of this.explosions) {
+      const progress = e.t / e.duration
+      ctx.save()
+
+      const flashAlpha = Math.max(0, 1 - progress * 3)
+      if (flashAlpha > 0) {
+        const flashRadius = 90 * this.scale
+        const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, flashRadius)
+        grad.addColorStop(0, withAlpha('#fff7ed', flashAlpha))
+        grad.addColorStop(1, withAlpha('#fff7ed', 0))
+        ctx.fillStyle = grad
+        ctx.beginPath()
+        ctx.arc(e.x, e.y, flashRadius, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      for (let i = 0; i < 2; i++) {
+        const ringProgress = Math.min(1, progress + i * 0.18)
+        if (ringProgress >= 1) continue
+        const ringRadius = (20 + ringProgress * 150) * this.scale
+        ctx.globalAlpha = (1 - ringProgress) * 0.85
+        ctx.strokeStyle = i === 0 ? '#fb923c' : '#f8fafc'
+        ctx.lineWidth = (i === 0 ? 6 : 3) * this.scale
+        ctx.beginPath()
+        ctx.arc(e.x, e.y, ringRadius, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+  }
+
+  private spawnExplosionParticles(x: number, y: number) {
+    const s = this.scale
+    for (let i = 0; i < 34; i++) {
+      const angle = rand(0, Math.PI * 2)
+      const speed = rand(4, 11) * s
+      const roll = Math.random()
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - rand(0, 2) * s,
+        gravity: 0.18,
+        life: rand(500, 950),
+        maxLife: 950,
+        size: rand(3, 7) * s,
+        color: roll > 0.66 ? '#f97316' : roll > 0.33 ? '#78716c' : '#fef08a',
+        kind: Math.random() > 0.4 ? 'dust' : 'spark',
+        angle: 0,
+      })
     }
   }
 
@@ -892,11 +1049,12 @@ export class PokemonMergeGame {
     for (const body of this.engine.world.bodies) {
       const plugin = pluginOf(body)
       if (!plugin || plugin.isPreview || body.isStatic) continue
-      // Game over only once the piece's center is above the line — a piece
-      // whose top edge merely grazes the line while mostly still below it
-      // doesn't count as "above" yet.
+      // Game over only once the piece's entire body has cleared the line —
+      // its bottom edge (position.y + radius) must be above the line, so a
+      // piece that's still half-hanging below the line doesn't count yet.
       const speed = Matter.Body.getSpeed(body)
-      if (body.position.y < this.gameOverLineY && speed < RESTING_SPEED) {
+      const bottomY = body.position.y + (body.circleRadius ?? 0)
+      if (bottomY < this.gameOverLineY && speed < RESTING_SPEED) {
         plugin.settleTimer += delta
         if (plugin.settleTimer > GAME_OVER_GRACE_MS) {
           this.triggerGameOver()
