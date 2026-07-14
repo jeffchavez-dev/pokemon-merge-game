@@ -93,7 +93,7 @@ export interface GameCallbacks {
   onLevelComplete: (levelIndex: number) => void
   onCycleComplete: (cycleNumber: number) => void
   onGameOver: (finalScore: number) => void
-  onQueueChange: (dropFamilyId: string, nextFamilyId: string) => void
+  onQueueChange: (dropFamilyId: string, dropTier: number, nextFamilyId: string, nextTier: number) => void
   onPowerChargesChange: (charges: Record<PowerId, number>) => void
   onArmedPowerChange: (powerId: PowerId | null) => void
   onDangerChange: (inDanger: boolean) => void
@@ -238,7 +238,9 @@ export class PokemonMergeGame {
   private gameOver = false
   private frozen = false
   private dropFamilyId = FAMILIES[0].id
+  private dropTier: 0 | 1 = 0
   private nextDropFamilyId = FAMILIES[0].id
+  private nextDropTier: 0 | 1 = 0
   private powerCharges: Record<PowerId, number> = this.freshCharges()
   private armedPower: PowerId | null = null
   private isDanger = false
@@ -324,8 +326,22 @@ export class PokemonMergeGame {
     return getLevelFamily(this.levelIndex)
   }
 
+  // Families shrink the further back they are from whichever family is
+  // the CURRENT level's goal (wrapping around the roster), so the active
+  // challenge always reads as the biggest thing on the board and families
+  // you cleared a while ago fade into the background rather than cluttering
+  // it at full size forever.
+  private familySizeMultiplier(familyId: string): number {
+    const currentIdx = this.levelIndex % FAMILIES.length
+    const familyIdx = FAMILIES.findIndex((f) => f.id === familyId)
+    const distanceBack = (currentIdx - familyIdx + FAMILIES.length) % FAMILIES.length
+    const shrinkPerStep = 0.05
+    const minMultiplier = 0.55
+    return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
+  }
+
   private radius(tile: Tile): number {
-    return tile.radius * this.scale
+    return tile.radius * this.scale * this.familySizeMultiplier(tile.familyId)
   }
 
   private spriteScale(tile: Tile): number {
@@ -339,9 +355,32 @@ export class PokemonMergeGame {
     return FAMILIES.slice(0, Math.min(this.levelIndex + 1, FAMILIES.length))
   }
 
-  private randomPoolFamilyId(): string {
+  // Weighted so families from more recent levels come up more often than
+  // ones unlocked long ago — the drop pool keeps growing, but the original
+  // level-1 family shouldn't show up just as often as the current one
+  // forever.
+  private weightedPoolFamilyId(): string {
     const pool = this.activePool()
-    return pool[Math.floor(Math.random() * pool.length)].id
+    const decay = 0.75
+    const weights = pool.map((_, i) => Math.pow(decay, pool.length - 1 - i))
+    const total = weights.reduce((a, b) => a + b, 0)
+    let r = Math.random() * total
+    for (let i = 0; i < pool.length; i++) {
+      r -= weights[i]
+      if (r <= 0) return pool[i].id
+    }
+    return pool[pool.length - 1].id
+  }
+
+  // Base-stage drops are the norm, but once a few levels have passed,
+  // occasionally drop an already-evolved (tier 1) Pokemon instead — capped
+  // so it stays a spice, not the majority of drops. Never for the current
+  // level's target family though: an evolved-form freebie there would skip
+  // most of the grind toward that level's actual goal.
+  private rollDropTier(familyId: string): 0 | 1 {
+    if (familyId === this.currentFamily().id) return 0
+    const evolvedChance = Math.min(0.3, this.levelIndex * 0.02)
+    return Math.random() < evolvedChance ? 1 : 0
   }
 
   private freshCharges(): Record<PowerId, number> {
@@ -381,14 +420,16 @@ export class PokemonMergeGame {
     }
 
     this.aimX = this.width / 2
-    this.dropFamilyId = this.randomPoolFamilyId()
-    this.nextDropFamilyId = this.randomPoolFamilyId()
+    this.dropFamilyId = this.weightedPoolFamilyId()
+    this.dropTier = this.rollDropTier(this.dropFamilyId)
+    this.nextDropFamilyId = this.weightedPoolFamilyId()
+    this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
     this.spawnPreview()
     this.render.options.background = boardBackgroundFor(this.currentFamily().id)
 
     this.callbacks.onScoreChange(this.score)
     this.callbacks.onLevelChange(this.levelIndex, this.currentFamily().id)
-    this.callbacks.onQueueChange(this.dropFamilyId, this.nextDropFamilyId)
+    this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
     this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     this.callbacks.onArmedPowerChange(null)
     this.callbacks.onDangerChange(false)
@@ -602,7 +643,7 @@ export class PokemonMergeGame {
     if (this.previewBody) {
       Matter.Composite.remove(this.engine.world, this.previewBody)
     }
-    const tile = getTile(this.dropFamilyId, 0)
+    const tile = getTile(this.dropFamilyId, this.dropTier)
     const body = Matter.Bodies.circle(this.aimX, this.dropY, this.radius(tile), {
       isStatic: true,
       isSensor: true,
@@ -629,7 +670,7 @@ export class PokemonMergeGame {
 
   setAimX(clientX: number, rect: DOMRect) {
     if (this.gameOver || this.frozen) return
-    const tile = getTile(this.dropFamilyId, 0)
+    const tile = getTile(this.dropFamilyId, this.dropTier)
     const ratio = this.width / rect.width
     const rawX = (clientX - rect.left) * ratio
     const r = this.radius(tile)
@@ -642,7 +683,7 @@ export class PokemonMergeGame {
 
   drop() {
     if (this.gameOver || this.frozen || !this.canDrop) return
-    const tile = getTile(this.dropFamilyId, 0)
+    const tile = getTile(this.dropFamilyId, this.dropTier)
     const body = Matter.Bodies.circle(this.aimX, this.dropY, this.radius(tile), {
       restitution: 0.15,
       friction: 0.2,
@@ -667,8 +708,10 @@ export class PokemonMergeGame {
     this.markDiscovered(tile.familyId, tile.tier)
 
     this.dropFamilyId = this.nextDropFamilyId
-    this.nextDropFamilyId = this.randomPoolFamilyId()
-    this.callbacks.onQueueChange(this.dropFamilyId, this.nextDropFamilyId)
+    this.dropTier = this.nextDropTier
+    this.nextDropFamilyId = this.weightedPoolFamilyId()
+    this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
+    this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
     this.spawnPreview()
 
     this.canDrop = false
@@ -849,9 +892,11 @@ export class PokemonMergeGame {
     for (const body of this.engine.world.bodies) {
       const plugin = pluginOf(body)
       if (!plugin || plugin.isPreview || body.isStatic) continue
-      const topY = body.position.y - (body.circleRadius ?? 0)
+      // Game over only once the piece's center is above the line — a piece
+      // whose top edge merely grazes the line while mostly still below it
+      // doesn't count as "above" yet.
       const speed = Matter.Body.getSpeed(body)
-      if (topY < this.gameOverLineY && speed < RESTING_SPEED) {
+      if (body.position.y < this.gameOverLineY && speed < RESTING_SPEED) {
         plugin.settleTimer += delta
         if (plugin.settleTimer > GAME_OVER_GRACE_MS) {
           this.triggerGameOver()

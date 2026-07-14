@@ -12,7 +12,9 @@ export default function Game() {
   const [levelIndex, setLevelIndex] = useState(0)
   const [familyId, setFamilyId] = useState(FAMILIES[0].id)
   const [dropFamilyId, setDropFamilyId] = useState(FAMILIES[0].id)
+  const [dropTier, setDropTier] = useState(0)
   const [nextFamilyId, setNextFamilyId] = useState(FAMILIES[0].id)
+  const [nextTier, setNextTier] = useState(0)
   const [levelBanner, setLevelBanner] = useState(false)
   const [cycleBanner, setCycleBanner] = useState<number | null>(null)
   const [isGameOver, setIsGameOver] = useState(false)
@@ -46,9 +48,11 @@ export default function Game() {
         setIsGameOver(true)
         setBestScore((prev) => Math.max(prev, finalScore))
       },
-      onQueueChange: (dropFam, nextFam) => {
+      onQueueChange: (dropFam, dTier, nextFam, nTier) => {
         setDropFamilyId(dropFam)
+        setDropTier(dTier)
         setNextFamilyId(nextFam)
+        setNextTier(nTier)
       },
       onPowerChargesChange: setPowerCharges,
       onArmedPowerChange: setArmedPower,
@@ -98,8 +102,8 @@ export default function Game() {
     setCapstoneFamilyId(null)
   }
 
-  const nowTile = getTile(dropFamilyId, 0)
-  const nextTile = getTile(nextFamilyId, 0)
+  const nowTile = getTile(dropFamilyId, dropTier)
+  const nextTile = getTile(nextFamilyId, nextTier)
   const goalTile = getTile(familyId, GOAL_TIER)
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
@@ -120,6 +124,7 @@ export default function Game() {
         <HeaderBar
           score={score}
           bestScore={bestScore}
+          levelIndex={levelIndex}
           goalTile={goalTile}
           nowTile={nowTile}
           nextTile={nextTile}
@@ -213,6 +218,7 @@ function Divider() {
 function HeaderBar({
   score,
   bestScore,
+  levelIndex,
   goalTile,
   nowTile,
   nextTile,
@@ -224,6 +230,7 @@ function HeaderBar({
 }: {
   score: number
   bestScore: number
+  levelIndex: number
   goalTile: ReturnType<typeof getTile>
   nowTile: ReturnType<typeof getTile>
   nextTile: ReturnType<typeof getTile>
@@ -233,6 +240,8 @@ function HeaderBar({
   inDanger: boolean
   onUsePower: (id: PowerId) => void
 }) {
+  const displayLevel = (levelIndex % FAMILIES.length) + 1
+
   return (
     <div
       className={`flex w-full shrink-0 flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-lg px-2 py-2 transition-shadow ${
@@ -242,6 +251,7 @@ function HeaderBar({
       <div className="flex items-center gap-1.5">
         <Stat label="Score" value={score} />
         <Stat label="Best" value={bestScore} />
+        <Stat label="Level" value={displayLevel} />
       </div>
 
       <Divider />
