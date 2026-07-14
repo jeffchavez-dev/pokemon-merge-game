@@ -14,6 +14,10 @@ const DEX_IDS = [
   // Flabébé, Honedge, Goomy lines
   650, 651, 652, 653, 654, 655, 656, 657, 658, 661, 662, 663, 664, 665, 666,
   669, 670, 671, 679, 680, 681, 704, 705, 706,
+  // Gen 7 (Alola): Rowlet, Litten, Popplio, Pikipek, Grubbin, Bounsweet,
+  // Jangmo-o lines
+  722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 736, 737, 738,
+  761, 762, 763, 782, 783, 784,
 ]
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'public', 'pokemon')
 

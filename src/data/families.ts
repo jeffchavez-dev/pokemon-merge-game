@@ -320,6 +320,72 @@ export const FAMILIES: Family[] = [
     'Sliminox',
     '🐌',
   ),
+  // Gen 7 (Alola) additions — same idea as the Kalos batch: extra chains
+  // on top of existing types, since Alola only has a handful of clean
+  // 3-stage lines (most of its new Pokemon stop at 2 stages).
+  buildFamily(
+    'grass3',
+    'Grass (Alola)',
+    '#166534',
+    [722, 723, 724],
+    ['Rowlet', 'Dartrix', 'Decidueye'],
+    'Shadowquill',
+    '🏹',
+  ),
+  buildFamily(
+    'fire3',
+    'Fire (Alola)',
+    '#7f1d1d',
+    [725, 726, 727],
+    ['Litten', 'Torracat', 'Incineroar'],
+    'Embermane',
+    '🌋',
+  ),
+  buildFamily(
+    'water3',
+    'Water (Alola)',
+    '#818cf8',
+    [728, 729, 730],
+    ['Popplio', 'Brionne', 'Primarina'],
+    'Sirenova',
+    '🎤',
+  ),
+  buildFamily(
+    'flying3',
+    'Flying (Alola)',
+    '#fbbf24',
+    [731, 732, 733],
+    ['Pikipek', 'Trumbeak', 'Toucannon'],
+    'Beakstorm',
+    '🦜',
+  ),
+  buildFamily(
+    'bug3',
+    'Bug (Alola)',
+    '#0d9488',
+    [736, 737, 738],
+    ['Grubbin', 'Charjabug', 'Vikavolt'],
+    'Voltcarap',
+    '🪲',
+  ),
+  buildFamily(
+    'grass4',
+    'Grass (Alola II)',
+    '#db2777',
+    [761, 762, 763],
+    ['Bounsweet', 'Steenee', 'Tsareena'],
+    'Regalthorn',
+    '👑',
+  ),
+  buildFamily(
+    'dragon3',
+    'Dragon (Alola)',
+    '#92400e',
+    [782, 783, 784],
+    ['Jangmo-o', 'Hakamo-o', 'Kommo-o'],
+    'Scaleguard',
+    '🛡️',
+  ),
 ]
 
 export const ALL_DEX_IDS = Array.from(new Set(collectedDexIds))
