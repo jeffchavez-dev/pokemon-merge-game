@@ -1167,6 +1167,20 @@ export function getLevelOrder(): Family[] {
   return levelOrder
 }
 
+// Restores a previously-saved level order (by family id) exactly, so a
+// resumed game shows the same goal at the same level it did before —
+// rather than silently re-shuffling and drifting out of sync with the
+// saved level index. Returns false (and leaves the order untouched) if the
+// ids don't cleanly map onto the current roster, e.g. an old save from
+// before a roster change.
+export function setLevelOrder(ids: string[]): boolean {
+  const byId = new Map(FAMILIES.map((f) => [f.id, f]))
+  const restored = ids.map((id) => byId.get(id)).filter((f): f is Family => !!f)
+  if (restored.length !== FAMILIES.length) return false
+  levelOrder = restored
+  return true
+}
+
 // Levels loop through the (partly shuffled) roster forever — level N's
 // family is getLevelOrder()[N % FAMILIES.length], so the game never runs
 // out of content.

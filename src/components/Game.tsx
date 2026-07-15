@@ -3,12 +3,22 @@ import { PokemonMergeGame } from '../game/engine'
 import { FAMILIES, GOAL_TIER, MAX_TIER, EEVEE_FAMILY_ID, getTile, getFamily, getLevelOrder } from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
 
+const BEST_SCORE_KEY = 'pokemon-merge-best-score'
+
+function loadBestScore(): number {
+  try {
+    return Number(localStorage.getItem(BEST_SCORE_KEY)) || 0
+  } catch {
+    return 0
+  }
+}
+
 export default function Game() {
   const containerRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<PokemonMergeGame | null>(null)
 
   const [score, setScore] = useState(0)
-  const [bestScore, setBestScore] = useState(0)
+  const [bestScore, setBestScore] = useState(loadBestScore)
   const [levelIndex, setLevelIndex] = useState(0)
   const [familyId, setFamilyId] = useState(FAMILIES[0].id)
   const [dropFamilyId, setDropFamilyId] = useState(FAMILIES[0].id)
@@ -51,7 +61,15 @@ export default function Game() {
       },
       onGameOver: (finalScore) => {
         setIsGameOver(true)
-        setBestScore((prev) => Math.max(prev, finalScore))
+        setBestScore((prev) => {
+          const next = Math.max(prev, finalScore)
+          try {
+            localStorage.setItem(BEST_SCORE_KEY, String(next))
+          } catch {
+            // ignore — best score just won't persist this session
+          }
+          return next
+        })
       },
       onQueueChange: (dropFam, dTier, nextFam, nTier) => {
         setDropFamilyId(dropFam)

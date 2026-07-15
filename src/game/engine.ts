@@ -6,6 +6,7 @@ import {
   getLevelFamily,
   getLevelOrder,
   reshuffleLevelOrder,
+  setLevelOrder,
   typeOf,
   randomEeveelutionTier,
   eeveeTradeValue,
@@ -53,6 +54,37 @@ const MEW_BLAST_MS = 900
 // rather than getting physically wedged in place on a crowded board.
 const WALL_CATEGORY = 0x0002
 const SPECIAL_CATEGORY = 0x0004
+
+// Progress persists across a page refresh (or just closing the tab) so a
+// reload resumes exactly where you left off — only "Restart from Level 1"
+// (an explicit choice) actually clears it. Bumped SAVE_VERSION invalidates
+// any old save whose shape no longer matches, rather than crashing on it.
+const SAVE_KEY = 'pokemon-merge-save'
+const SAVE_VERSION = 1
+const AUTOSAVE_INTERVAL_MS = 2000
+
+type SavedBody = {
+  familyId: string
+  tier: number
+  x: number
+  y: number
+}
+
+type SavedGame = {
+  version: number
+  levelIndex: number
+  score: number
+  levelOrderIds: string[]
+  discovered: string[]
+  powerCharges: Record<PowerId, number>
+  bonusUnlockedPowerIds: PowerId[]
+  eeveeCaught: number
+  dropFamilyId: string
+  dropTier: number
+  nextDropFamilyId: string
+  nextDropTier: number
+  bodies: SavedBody[]
+}
 
 type TilePlugin = {
   tileId: string
@@ -288,6 +320,7 @@ export class PokemonMergeGame {
   // vanishing — spent later to trade for a bonus power. Persists across
   // levels (like bonusUnlockedPowers), only cleared on a full restart.
   private eeveeCaught = 0
+  private saveIntervalId: ReturnType<typeof setInterval> | null = null
 
   constructor(container: HTMLElement, callbacks: GameCallbacks) {
     this.container = container
@@ -305,7 +338,133 @@ export class PokemonMergeGame {
     this.aimX = this.width / 2
 
     this.initWorld()
-    this.startLevel(0, false, true)
+    const saved = this.loadSave()
+    if (saved) {
+      this.resumeFromSave(saved)
+    } else {
+      this.startLevel(0, false, true)
+    }
+    this.saveIntervalId = setInterval(() => this.persist(), AUTOSAVE_INTERVAL_MS)
+  }
+
+  private persist() {
+    try {
+      const bodies: SavedBody[] = this.dynamicBodies().map((b) => {
+        const plugin = pluginOf(b)!
+        return { familyId: plugin.familyId, tier: plugin.tier, x: b.position.x, y: b.position.y }
+      })
+      const saved: SavedGame = {
+        version: SAVE_VERSION,
+        levelIndex: this.levelIndex,
+        score: this.score,
+        levelOrderIds: getLevelOrder().map((f) => f.id),
+        discovered: Array.from(this.discovered),
+        powerCharges: this.powerCharges,
+        bonusUnlockedPowerIds: Array.from(this.bonusUnlockedPowers),
+        eeveeCaught: this.eeveeCaught,
+        dropFamilyId: this.dropFamilyId,
+        dropTier: this.dropTier,
+        nextDropFamilyId: this.nextDropFamilyId,
+        nextDropTier: this.nextDropTier,
+        bodies,
+      }
+      localStorage.setItem(SAVE_KEY, JSON.stringify(saved))
+    } catch {
+      // Storage unavailable or full — persistence is a nice-to-have, not
+      // worth crashing the game over.
+    }
+  }
+
+  private loadSave(): SavedGame | null {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as SavedGame
+      if (parsed.version !== SAVE_VERSION) return null
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  private clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY)
+    } catch {
+      // ignore
+    }
+  }
+
+  // Rebuilds the board and all progress from a save instead of starting
+  // fresh at level 1 — a page refresh (or just reopening the tab later)
+  // should resume exactly where the player left off.
+  private resumeFromSave(saved: SavedGame) {
+    if (!setLevelOrder(saved.levelOrderIds)) {
+      // Save doesn't match the current roster (e.g. an old save from
+      // before families were added) — safer to start clean than show a
+      // mismatched level/goal pairing.
+      this.startLevel(0, false, true)
+      return
+    }
+    this.levelIndex = saved.levelIndex
+    this.score = saved.score
+    this.discovered = new Set(saved.discovered)
+    this.powerCharges = saved.powerCharges
+    this.bonusUnlockedPowers = new Set(saved.bonusUnlockedPowerIds)
+    this.eeveeCaught = saved.eeveeCaught
+    this.dropFamilyId = saved.dropFamilyId
+    this.dropTier = saved.dropTier
+    this.nextDropFamilyId = saved.nextDropFamilyId
+    this.nextDropTier = saved.nextDropTier
+    this.gameOver = false
+    this.frozen = false
+    this.canDrop = true
+    this.aimX = this.width / 2
+
+    for (const b of saved.bodies) {
+      const tile = getTile(b.familyId, b.tier)
+      const body = Matter.Bodies.circle(b.x, b.y, this.radius(tile), {
+        restitution: 0.15,
+        friction: 0.2,
+        frictionAir: 0.0015,
+        density: 0.0015,
+        render: {
+          sprite: {
+            texture: tile.sprite,
+            xScale: this.spriteScale(tile),
+            yScale: this.spriteScale(tile),
+          },
+        },
+      })
+      const isSpecial = this.isSpecialFamily(tile.familyId)
+      withPlugin(body, {
+        tileId: tile.id,
+        familyId: tile.familyId,
+        tier: tile.tier,
+        merging: false,
+        settleTimer: 0,
+        ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
+      })
+      if (isSpecial) {
+        body.collisionFilter = { category: SPECIAL_CATEGORY, mask: WALL_CATEGORY, group: 0 }
+      }
+      Matter.Composite.add(this.engine.world, body)
+    }
+
+    this.spawnPreview()
+
+    this.callbacks.onScoreChange(this.score)
+    this.callbacks.onLevelChange(this.levelIndex, this.currentFamily().id)
+    this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
+    this.callbacks.onPowerChargesChange({ ...this.powerCharges })
+    this.callbacks.onArmedPowerChange(null)
+    this.callbacks.onDangerChange(false)
+    this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
+    this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
+    for (const key of this.discovered) {
+      const idx = key.lastIndexOf('-')
+      this.callbacks.onDiscovered(key.slice(0, idx), Number(key.slice(idx + 1)))
+    }
   }
 
   private initWorld() {
@@ -510,6 +669,7 @@ export class PokemonMergeGame {
     this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
     if (isMewLevel) this.callbacks.onMewLevelAnnounced()
     else if (isEeveeLevel) this.callbacks.onEeveeLevelAnnounced()
+    this.persist()
   }
 
   private markDiscovered(familyId: string, tier: number) {
@@ -1280,6 +1440,7 @@ export class PokemonMergeGame {
     this.bonusUnlockedPowers.clear()
     this.eeveeCaught = 0
     this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
+    this.clearSave()
     reshuffleLevelOrder()
     this.startLevel(0, false, true)
   }
@@ -1785,6 +1946,8 @@ export class PokemonMergeGame {
   }
 
   destroy() {
+    if (this.saveIntervalId !== null) clearInterval(this.saveIntervalId)
+    this.persist()
     Matter.Render.stop(this.render)
     Matter.Runner.stop(this.runner)
     Matter.World.clear(this.engine.world, false)
