@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PokemonMergeGame } from '../game/engine'
-import { FAMILIES, GOAL_TIER, MAX_TIER, getTile } from '../data/families'
+import { FAMILIES, GOAL_TIER, MAX_TIER, EEVEE_FAMILY_ID, getTile, getFamily, getLevelOrder } from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
 
 export default function Game() {
@@ -27,6 +27,9 @@ export default function Game() {
   const [infoOpen, setInfoOpen] = useState(false)
   const [activePowerIds, setActivePowerIds] = useState<PowerId[]>([POWERS[0].id])
   const [capstoneFamilyId, setCapstoneFamilyId] = useState<string | null>(null)
+  const [eeveeCaught, setEeveeCaught] = useState(0)
+  const [eeveeBanner, setEeveeBanner] = useState(false)
+  const [eeveeToast, setEeveeToast] = useState<string | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -63,6 +66,15 @@ export default function Game() {
       onActivePowersChange: setActivePowerIds,
       onCapstoneFormed: (fam) => {
         setCapstoneFamilyId(fam)
+      },
+      onEeveeCaughtChange: setEeveeCaught,
+      onEeveeLevelAnnounced: () => {
+        setEeveeBanner(true)
+        setTimeout(() => setEeveeBanner(false), 1800)
+      },
+      onEeveeCaught: (name, value) => {
+        setEeveeToast(`Caught shiny ${name}! +${value}`)
+        setTimeout(() => setEeveeToast(null), 2000)
       },
     })
     gameRef.current = game
@@ -102,9 +114,14 @@ export default function Game() {
     setCapstoneFamilyId(null)
   }
 
+  const handleExchangeEevee = () => {
+    gameRef.current?.useEeveeExchange()
+  }
+
   const nowTile = getTile(dropFamilyId, dropTier)
   const nextTile = getTile(nextFamilyId, nextTier)
   const goalTile = getTile(familyId, GOAL_TIER)
+  const goalFamily = getFamily(familyId)
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
   return (
@@ -133,9 +150,44 @@ export default function Game() {
           armedPower={armedPower}
           inDanger={inDanger}
           onUsePower={handleUsePower}
+          eeveeCaught={eeveeCaught}
+          onExchangeEevee={handleExchangeEevee}
         />
 
         <div className="relative min-h-0 flex-1">
+          <div
+            className="absolute inset-0 overflow-hidden rounded-2xl bg-slate-900 transition-colors duration-500"
+            style={{ backgroundColor: `${goalFamily.color}1a` }}
+          >
+            <div
+              key={goalTile.id}
+              aria-hidden
+              className="absolute top-1/2 left-1/2 h-[75%] w-[75%] -translate-x-1/2 -translate-y-1/2 opacity-40"
+              style={{
+                backgroundColor: goalFamily.color,
+                WebkitMaskImage: `url(${goalTile.sprite})`,
+                maskImage: `url(${goalTile.sprite})`,
+                WebkitMaskSize: 'contain',
+                maskSize: 'contain',
+                WebkitMaskRepeat: 'no-repeat',
+                maskRepeat: 'no-repeat',
+                WebkitMaskPosition: 'center',
+                maskPosition: 'center',
+              }}
+            />
+          </div>
+          {eeveeBanner && (
+            <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-amber-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-amber-200 shadow-lg">
+              A wild Eevee appeared!
+            </div>
+          )}
+
+          {eeveeToast && (
+            <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-amber-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-amber-200 shadow-lg">
+              {eeveeToast}
+            </div>
+          )}
+
           <div
             ref={containerRef}
             onPointerMove={handlePointerMove}
@@ -227,6 +279,8 @@ function HeaderBar({
   armedPower,
   inDanger,
   onUsePower,
+  eeveeCaught,
+  onExchangeEevee,
 }: {
   score: number
   bestScore: number
@@ -239,6 +293,8 @@ function HeaderBar({
   armedPower: PowerId | null
   inDanger: boolean
   onUsePower: (id: PowerId) => void
+  eeveeCaught: number
+  onExchangeEevee: () => void
 }) {
   const displayLevel = (levelIndex % FAMILIES.length) + 1
 
@@ -299,6 +355,22 @@ function HeaderBar({
             </button>
           )
         })}
+
+        <button
+          disabled={eeveeCaught <= 0}
+          onClick={onExchangeEevee}
+          title="Trade a caught Eevee for a bonus power"
+          className={`relative flex h-9 w-9 flex-col items-center justify-center rounded-full border transition-transform ${
+            eeveeCaught <= 0
+              ? 'border-slate-700 bg-slate-900 opacity-30'
+              : 'border-amber-300 bg-amber-400/20 active:scale-95'
+          }`}
+        >
+          <img src={getTile(EEVEE_FAMILY_ID, 0).sprite} alt="Eevee" className="h-6 w-6 object-contain" />
+          <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[9px] font-semibold text-slate-200">
+            {eeveeCaught}
+          </span>
+        </button>
       </div>
     </div>
   )
@@ -373,7 +445,7 @@ function InfoOverlay({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {FAMILIES.map((f, i) => {
+          {getLevelOrder().map((f, i) => {
             const state = i < currentInCycle ? 'done' : i === currentInCycle ? 'current' : 'locked'
             return (
               <div
@@ -445,13 +517,16 @@ function CapstonePowerModal({
   charges: Record<PowerId, number>
   onChoose: (id: PowerId) => void
 }) {
-  const capstone = getTile(familyId, MAX_TIER)
+  const isEeveeTrade = familyId === EEVEE_FAMILY_ID
+  const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, MAX_TIER)
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">
       <img src={capstone.sprite} alt={capstone.name} className="h-20 w-20 object-contain" />
       <div className="text-center">
-        <div className="text-lg font-bold text-yellow-300">{capstone.name} discovered!</div>
+        <div className="text-lg font-bold text-yellow-300">
+          {isEeveeTrade ? 'Traded an Eevee!' : `${capstone.name} discovered!`}
+        </div>
         <div className="text-sm text-slate-400">Choose a power to boost:</div>
       </div>
 

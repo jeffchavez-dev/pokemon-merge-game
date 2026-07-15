@@ -1,5 +1,19 @@
 import Matter from 'matter-js'
-import { FAMILIES, getTile, getFamily, getLevelFamily, GOAL_TIER, MAX_TIER, type Tile } from '../data/families'
+import {
+  FAMILIES,
+  getTile,
+  getFamily,
+  getLevelFamily,
+  getLevelOrder,
+  reshuffleLevelOrder,
+  typeOf,
+  randomEeveelutionTier,
+  eeveeTradeValue,
+  EEVEE_FAMILY_ID,
+  GOAL_TIER,
+  MAX_TIER,
+  type Tile,
+} from '../data/families'
 import { POWERS, getPower, type PowerId } from '../data/powers'
 
 // The tile radii / spacing in families.ts were tuned assuming a board this
@@ -16,13 +30,17 @@ const CELEBRATION_MS = 1500
 const LEVEL_TRANSITION_MS = 1700
 const CYCLE_BANNER_MS = 2200
 const THUNDER_MAX_TARGETS = 3
-const BOARD_BASE_BG = '#0f172a'
 const EXPLOSION_MS = 650
 const EXPLOSION_COOLDOWN_MS = 900
 // Capstones can't merge further, so two of them colliding is a dedicated
 // "boom" moment instead: a blast radius that crushes whatever weaker pieces
 // are caught nearby, rather than the two just bouncing off each other.
 const CAPSTONE_BLAST_RADIUS = 170
+// Every 3rd level, a wild Eevee is guaranteed in the queue. The longer it
+// sits uncaught, the more it tries to hop away — a few times, then it gives
+// up (so it stays winnable, just riskier the longer you wait).
+const EEVEE_HOP_INTERVAL_MS = 2200
+const EEVEE_MAX_HOPS = 3
 
 type TilePlugin = {
   tileId: string
@@ -32,9 +50,13 @@ type TilePlugin = {
   settleTimer: number
   isPreview?: boolean
   explodeCooldown?: number
+  // Eevee-only: when it landed, and how many times it's already hopped —
+  // the longer it sits uncaught, the more it tries to flee upward.
+  bornAt?: number
+  hopCount?: number
 }
 
-type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash'
+type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash' | 'twinkle'
 
 type PokeballThrow = {
   startX: number
@@ -114,6 +136,9 @@ export interface GameCallbacks {
   onDiscovered: (familyId: string, tier: number) => void
   onActivePowersChange: (ids: PowerId[]) => void
   onCapstoneFormed: (familyId: string) => void
+  onEeveeCaughtChange: (count: number) => void
+  onEeveeLevelAnnounced: () => void
+  onEeveeCaught: (name: string, value: number) => void
 }
 
 function rand(min: number, max: number) {
@@ -126,27 +151,6 @@ function withAlpha(hex: string, alpha: number): string {
     .toString(16)
     .padStart(2, '0')
   return `${hex}${a}`
-}
-
-function mixColor(hexA: string, hexB: string, t: number): string {
-  const a = parseInt(hexA.slice(1), 16)
-  const b = parseInt(hexB.slice(1), 16)
-  const ar = (a >> 16) & 255,
-    ag = (a >> 8) & 255,
-    ab = a & 255
-  const br = (b >> 16) & 255,
-    bg = (b >> 8) & 255,
-    bb = b & 255
-  const r = Math.round(ar + (br - ar) * t)
-  const g = Math.round(ag + (bg - ag) * t)
-  const bl = Math.round(ab + (bb - ab) * t)
-  return `#${((1 << 24) + (r << 16) + (g << 8) + bl).toString(16).slice(1)}`
-}
-
-// A dark, level-themed tint so the board subtly reads as "Electric",
-// "Fire", etc. without the family color overpowering the sprites.
-function boardBackgroundFor(familyId: string): string {
-  return mixColor(BOARD_BASE_BG, getFamily(familyId).color, 0.3)
 }
 
 // Draws a shaded, spinnable Poke Ball at (cx, cy). The red/white/band
@@ -254,15 +258,19 @@ export class PokemonMergeGame {
   private gameOver = false
   private frozen = false
   private dropFamilyId = FAMILIES[0].id
-  private dropTier: 0 | 1 = 0
+  private dropTier = 0
   private nextDropFamilyId = FAMILIES[0].id
-  private nextDropTier: 0 | 1 = 0
+  private nextDropTier = 0
   private powerCharges: Record<PowerId, number> = this.freshCharges()
   private armedPower: PowerId | null = null
   private isDanger = false
   // Powers unlocked early via a capstone bonus pick, on top of the normal
   // one-per-level schedule. Persists for the whole game session.
   private bonusUnlockedPowers = new Set<PowerId>()
+  // Eevee-line pieces caught with Poke Ball, banked here instead of just
+  // vanishing — spent later to trade for a bonus power. Persists across
+  // levels (like bonusUnlockedPowers), only cleared on a full restart.
+  private eeveeCaught = 0
 
   constructor(container: HTMLElement, callbacks: GameCallbacks) {
     this.container = container
@@ -292,7 +300,12 @@ export class PokemonMergeGame {
         width: this.width,
         height: this.height,
         wireframes: false,
-        background: '#1e293b',
+        // Transparent: the tinted background + goal-Pokemon silhouette live
+        // as DOM layers behind this canvas (see Game.tsx) rather than being
+        // drawn on the canvas itself — Matter repaints its own background
+        // fill between every render pass, so anything drawn "underneath"
+        // the bodies here would just get wiped each frame.
+        background: 'transparent',
       },
     })
     this.runner = Matter.Runner.create()
@@ -324,6 +337,8 @@ export class PokemonMergeGame {
       this.updateCelebration()
       this.updateTidalWave()
       this.updateExplosions()
+      this.updateEeveeSparkles()
+      this.updateEeveeEscape()
       this.updateDangerState()
       this.checkGameOver()
     })
@@ -352,9 +367,13 @@ export class PokemonMergeGame {
   // you cleared a while ago fade into the background rather than cluttering
   // it at full size forever.
   private familySizeMultiplier(familyId: string): number {
-    const currentIdx = this.levelIndex % FAMILIES.length
-    const familyIdx = FAMILIES.findIndex((f) => f.id === familyId)
-    const distanceBack = (currentIdx - familyIdx + FAMILIES.length) % FAMILIES.length
+    // Eevee isn't part of the level rotation, so it has no "distance back"
+    // to measure — always render it at full size since it's a rare find.
+    if (familyId === EEVEE_FAMILY_ID) return 1
+    const order = getLevelOrder()
+    const currentIdx = this.levelIndex % order.length
+    const familyIdx = order.findIndex((f) => f.id === familyId)
+    const distanceBack = (currentIdx - familyIdx + order.length) % order.length
     const shrinkPerStep = 0.05
     const minMultiplier = 0.55
     return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
@@ -369,10 +388,11 @@ export class PokemonMergeGame {
   }
 
   // The families a player can drop during this level: the level's target
-  // family plus every family from earlier levels (capped once the full
-  // roster has appeared, rather than resetting when the roster loops).
+  // family plus every family from earlier levels in play order (capped once
+  // the full roster has appeared, rather than resetting when it loops).
   private activePool() {
-    return FAMILIES.slice(0, Math.min(this.levelIndex + 1, FAMILIES.length))
+    const order = getLevelOrder()
+    return order.slice(0, Math.min(this.levelIndex + 1, order.length))
   }
 
   // Weighted so families from more recent levels come up more often than
@@ -444,10 +464,18 @@ export class PokemonMergeGame {
     this.aimX = this.width / 2
     this.dropFamilyId = this.weightedPoolFamilyId()
     this.dropTier = this.rollDropTier(this.dropFamilyId)
-    this.nextDropFamilyId = this.weightedPoolFamilyId()
-    this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
+    // A wild Eevee (one of its 9 forms, picked fresh each visit) is queued
+    // up as the second drop, guaranteed, every 3rd level — so catching one
+    // with Poke Ball is a reliable but not overly frequent beat.
+    const isEeveeLevel = (this.levelIndex + 1) % 3 === 0
+    if (isEeveeLevel) {
+      this.nextDropFamilyId = EEVEE_FAMILY_ID
+      this.nextDropTier = randomEeveelutionTier()
+    } else {
+      this.nextDropFamilyId = this.weightedPoolFamilyId()
+      this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
+    }
     this.spawnPreview()
-    this.render.options.background = boardBackgroundFor(this.currentFamily().id)
 
     this.callbacks.onScoreChange(this.score)
     this.callbacks.onLevelChange(this.levelIndex, this.currentFamily().id)
@@ -456,9 +484,13 @@ export class PokemonMergeGame {
     this.callbacks.onArmedPowerChange(null)
     this.callbacks.onDangerChange(false)
     this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
+    if (isEeveeLevel) this.callbacks.onEeveeLevelAnnounced()
   }
 
   private markDiscovered(familyId: string, tier: number) {
+    // Eevee isn't part of the discovered-species dex (it's not in FAMILIES),
+    // so it doesn't belong in that count.
+    if (familyId === EEVEE_FAMILY_ID) return
     const key = `${familyId}-${tier}`
     if (this.discovered.has(key)) return
     this.discovered.add(key)
@@ -520,6 +552,25 @@ export class PokemonMergeGame {
           ctx.fillStyle = grad
           ctx.beginPath()
           ctx.arc(p.x, p.y, growth, 0, Math.PI * 2)
+          ctx.fill()
+          break
+        }
+        case 'twinkle': {
+          // A tiny 4-point sparkle glint (two crossed diamonds) rather than
+          // a plain dot, so it actually reads as "shiny" rather than dust.
+          ctx.translate(p.x, p.y)
+          ctx.rotate(p.angle)
+          const s = p.size * 2.4
+          ctx.beginPath()
+          ctx.moveTo(0, -s)
+          ctx.lineTo(s * 0.28, -s * 0.28)
+          ctx.lineTo(s, 0)
+          ctx.lineTo(s * 0.28, s * 0.28)
+          ctx.lineTo(0, s)
+          ctx.lineTo(-s * 0.28, s * 0.28)
+          ctx.lineTo(-s, 0)
+          ctx.lineTo(-s * 0.28, -s * 0.28)
+          ctx.closePath()
           ctx.fill()
           break
         }
@@ -725,6 +776,7 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
+      ...(tile.familyId === EEVEE_FAMILY_ID ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
     })
     Matter.Composite.add(this.engine.world, body)
     this.markDiscovered(tile.familyId, tile.tier)
@@ -759,8 +811,16 @@ export class PokemonMergeGame {
     }
 
     if (pa.merging || pb.merging) return
-    if (pa.familyId !== pb.familyId || pa.tier !== pb.tier) return
+    if (pa.tier !== pb.tier) return
     if (pa.tier >= MAX_TIER) return
+
+    const sameFamily = pa.familyId === pb.familyId
+    // Two different families' final evolutions (e.g. Raichu and Luxray —
+    // different chains, both "electric") can also fuse into that type's
+    // capstone, not just two of the exact same species.
+    const sameTypeFinal = pa.tier === GOAL_TIER && typeOf(pa.familyId) === typeOf(pb.familyId)
+    if (!sameFamily && !sameTypeFinal) return
+
     pa.merging = true
     pb.merging = true
     this.pendingMerges.push([a, b])
@@ -900,17 +960,24 @@ export class PokemonMergeGame {
     }
   }
 
-  // Merges two same-family, same-tier bodies into the next tier. Returns
-  // true if this merge completed the current level (caller should stop).
+  // Merges two matching bodies into the next tier. Two of the exact same
+  // family advance one tier as usual; two different families' final
+  // evolutions that share a type (e.g. Raichu + Luxray) instead fuse
+  // straight into that type's capstone. Returns true if this merge
+  // completed the current level (caller should stop).
   private applyMerge(a: Matter.Body, b: Matter.Body): boolean {
     const pa = pluginOf(a)!
+    const pb = pluginOf(b)!
     const midX = (a.position.x + b.position.x) / 2
     const midY = (a.position.y + b.position.y) / 2
     Matter.Composite.remove(this.engine.world, [a, b])
-    this.spawnMergeEffect(pa.familyId, midX, midY)
 
-    const newTier = pa.tier + 1
-    const tile = getTile(pa.familyId, newTier)
+    const sameFamily = pa.familyId === pb.familyId
+    const resultFamilyId = sameFamily ? pa.familyId : typeOf(pa.familyId)
+    const newTier = sameFamily ? pa.tier + 1 : MAX_TIER
+    this.spawnMergeEffect(resultFamilyId, midX, midY)
+
+    const tile = getTile(resultFamilyId, newTier)
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
       restitution: 0.15,
       friction: 0.2,
@@ -1078,6 +1145,51 @@ export class PokemonMergeGame {
     })
   }
 
+  // A faint twinkle around any Eevee-line piece currently on the board, so
+  // it visually announces itself rather than blending in as just another
+  // drop.
+  private updateEeveeSparkles() {
+    if (this.frozen) return
+    for (const body of this.dynamicBodies()) {
+      const plugin = pluginOf(body)
+      if (!plugin || plugin.familyId !== EEVEE_FAMILY_ID) continue
+      if (Math.random() > 0.12) continue
+      const angle = rand(0, Math.PI * 2)
+      const dist = rand(0.3, 0.9) * (body.circleRadius ?? 20)
+      this.particles.push({
+        x: body.position.x + Math.cos(angle) * dist,
+        y: body.position.y + Math.sin(angle) * dist,
+        vx: 0,
+        vy: -rand(0.2, 0.5) * this.scale,
+        gravity: 0,
+        life: rand(300, 550),
+        maxLife: 550,
+        size: rand(1.5, 3) * this.scale,
+        color: Math.random() > 0.5 ? '#fef9c3' : '#f8fafc',
+        kind: 'twinkle',
+        angle: rand(0, Math.PI * 2),
+      })
+    }
+  }
+
+  // The longer a wild Eevee sits uncaught, the more it tries to hop away —
+  // a few times, then it settles for good, so it stays winnable.
+  private updateEeveeEscape() {
+    if (this.frozen) return
+    const now = this.engine.timing.timestamp
+    for (const body of this.dynamicBodies()) {
+      const plugin = pluginOf(body)
+      if (!plugin || plugin.familyId !== EEVEE_FAMILY_ID || plugin.bornAt === undefined) continue
+      const hopCount = plugin.hopCount ?? 0
+      if (hopCount >= EEVEE_MAX_HOPS) continue
+      const dueHops = Math.floor((now - plugin.bornAt) / EEVEE_HOP_INTERVAL_MS)
+      if (dueHops <= hopCount) continue
+      plugin.hopCount = hopCount + 1
+      Matter.Body.setVelocity(body, { x: rand(-3, 3) * this.scale, y: -rand(5, 8) * this.scale })
+      this.spawnMergeEffect(EEVEE_FAMILY_ID, body.position.x, body.position.y)
+    }
+  }
+
   private updateDangerState() {
     let danger = false
     for (const body of this.dynamicBodies()) {
@@ -1102,7 +1214,86 @@ export class PokemonMergeGame {
 
   restartGame() {
     this.bonusUnlockedPowers.clear()
+    this.eeveeCaught = 0
+    this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
+    reshuffleLevelOrder()
     this.startLevel(0, false, true)
+  }
+
+  // --- Eevee collectible --------------------------------------------------
+
+  private catchEevee(tier: number, x: number, y: number) {
+    const tile = getTile(EEVEE_FAMILY_ID, tier)
+    const value = eeveeTradeValue(tier)
+    this.eeveeCaught += value
+    this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
+    this.callbacks.onEeveeCaught(tile.name, value)
+    this.spawnShinyCaptureEffect(x, y)
+  }
+
+  // A bigger, gold/rainbow-tinted burst for an Eevee catch specifically —
+  // the regular Poke Ball capture flash is white, so this reads as a
+  // distinctly bigger deal.
+  private spawnShinyCaptureEffect(x: number, y: number) {
+    const s = this.scale
+    this.particles.push({
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      gravity: 0,
+      life: 320,
+      maxLife: 320,
+      size: 10 * s,
+      color: '#fef08a',
+      kind: 'flash',
+      angle: 0,
+    })
+    const rainbow = ['#f87171', '#fbbf24', '#facc15', '#4ade80', '#38bdf8', '#818cf8', '#e879f9']
+    for (let i = 0; i < 22; i++) {
+      const angle = rand(0, Math.PI * 2)
+      const speed = rand(2.5, 6.5) * s
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - rand(0.5, 2) * s,
+        gravity: 0.1,
+        life: rand(500, 850),
+        maxLife: 850,
+        size: rand(2, 3.5) * s,
+        color: rainbow[i % rainbow.length],
+        kind: 'twinkle',
+        angle: rand(0, Math.PI * 2),
+      })
+    }
+    for (let i = 0; i < 2; i++) {
+      this.particles.push({
+        x,
+        y,
+        vx: 0,
+        vy: 0,
+        gravity: 0,
+        life: 420 - i * 80,
+        maxLife: 420,
+        size: 8 * s,
+        color: '#fde047',
+        kind: 'ring',
+        angle: 0,
+      })
+    }
+  }
+
+  // Spends one banked Eevee to open the same choose-a-power modal a
+  // capstone discovery triggers. Returns false if there's nothing to spend
+  // or the board isn't in a state to accept it.
+  useEeveeExchange(): boolean {
+    if (this.eeveeCaught <= 0 || this.frozen || this.gameOver) return false
+    this.eeveeCaught -= 1
+    this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
+    this.frozen = true
+    this.callbacks.onCapstoneFormed(EEVEE_FAMILY_ID)
+    return true
   }
 
   // --- Special powers ---------------------------------------------------
@@ -1200,9 +1391,14 @@ export class PokemonMergeGame {
       if (throwObj.t >= throwObj.duration) {
         throwObj.landed = true
         if (this.engine.world.bodies.includes(throwObj.targetBody)) {
+          const plugin = pluginOf(throwObj.targetBody)
           Matter.Composite.remove(this.engine.world, throwObj.targetBody)
           this.spawnPokeballEffect(throwObj.endX, throwObj.endY)
-          this.spawnCaptureFlash(throwObj.endX, throwObj.endY)
+          if (plugin?.familyId === EEVEE_FAMILY_ID) {
+            this.catchEevee(plugin.tier, throwObj.endX, throwObj.endY)
+          } else {
+            this.spawnCaptureFlash(throwObj.endX, throwObj.endY)
+          }
         }
       }
     }
