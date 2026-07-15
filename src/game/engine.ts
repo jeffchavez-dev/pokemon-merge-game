@@ -12,9 +12,10 @@ import {
   eeveeTradeValue,
   EEVEE_FAMILY_ID,
   MEW_FAMILY_ID,
-  GOAL_TIER,
-  MAX_TIER,
+  familyGoalTier,
+  familyMaxTier,
   type Tile,
+  type Family,
 } from '../data/families'
 import { POWERS, getPower, type PowerId } from '../data/powers'
 
@@ -45,6 +46,11 @@ const CAPSTONE_BLAST_RADIUS = 170
 const SPECIAL_HOP_INTERVAL_MS = 1100
 const MEW_LEVEL_INTERVAL = 5
 const EEVEE_LEVEL_INTERVAL = 3
+// How many distinct families can drop during a given level. Keeping this
+// small (rather than letting the whole ever-growing roster compete) means
+// the current level's goal family stays a frequent drop instead of getting
+// buried among 100+ other species once the roster's grown this large.
+const ACTIVE_POOL_SIZE = 12
 // Mew's catch is a screen-filling event rather than a local one.
 const MEW_BLAST_MS = 900
 
@@ -98,6 +104,9 @@ type TilePlugin = {
   // hopped — the longer it sits uncaught, the more it tries to flee upward.
   bornAt?: number
   hopCount?: number
+  // A "charged" tile (see buildFamily2) — drawn with a pulsing halo since
+  // it reuses an earlier stage's sprite rather than a new one.
+  glow?: boolean
 }
 
 type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash' | 'twinkle'
@@ -443,6 +452,7 @@ export class PokemonMergeGame {
         tier: tile.tier,
         merging: false,
         settleTimer: 0,
+        glow: tile.glow,
         ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
       })
       if (isSpecial) {
@@ -522,6 +532,7 @@ export class PokemonMergeGame {
 
     Matter.Events.on(this.render, 'afterRender', () => {
       this.drawGameOverLine()
+      this.drawGlowHalos()
       this.drawParticles()
       this.drawPokeballThrows()
       this.drawLightningStrikes()
@@ -565,29 +576,37 @@ export class PokemonMergeGame {
     return (this.radius(tile) * 2) / tile.spriteSize
   }
 
-  // The families a player can drop during this level: the level's target
-  // family plus every family from earlier levels in play order (capped once
-  // the full roster has appeared, rather than resetting when it loops).
-  private activePool() {
+  // The families a player can drop during this level: the current goal
+  // family plus the ACTIVE_POOL_SIZE - 1 families closest to it (by modular
+  // distance in the level order, same measure familySizeMultiplier uses),
+  // capped to whatever's actually been unlocked so far on a fresh run.
+  // Sorted closest-first, so index 0 is always the current level's family.
+  private activePool(): Family[] {
     const order = getLevelOrder()
-    return order.slice(0, Math.min(this.levelIndex + 1, order.length))
+    const currentIdx = this.levelIndex % order.length
+    const poolSize = Math.min(ACTIVE_POOL_SIZE, this.levelIndex + 1, order.length)
+    return order
+      .map((f, i) => ({ f, distanceBack: (currentIdx - i + order.length) % order.length }))
+      .sort((a, b) => a.distanceBack - b.distanceBack)
+      .slice(0, poolSize)
+      .map((x) => x.f)
   }
 
-  // Weighted so families from more recent levels come up more often than
-  // ones unlocked long ago — the drop pool keeps growing, but the original
-  // level-1 family shouldn't show up just as often as the current one
-  // forever.
+  // Weighted so the current level's family (and other recently-seen ones)
+  // come up far more often than families from long ago — capping the pool
+  // above already keeps variety in check; this keeps the goal family itself
+  // frequent within that smaller pool.
   private weightedPoolFamilyId(): string {
     const pool = this.activePool()
-    const decay = 0.75
-    const weights = pool.map((_, i) => Math.pow(decay, pool.length - 1 - i))
+    const decay = 0.7
+    const weights = pool.map((_, i) => Math.pow(decay, i))
     const total = weights.reduce((a, b) => a + b, 0)
     let r = Math.random() * total
     for (let i = 0; i < pool.length; i++) {
       r -= weights[i]
       if (r <= 0) return pool[i].id
     }
-    return pool[pool.length - 1].id
+    return pool[0].id
   }
 
   // Base-stage drops are the norm, but once a few levels have passed,
@@ -693,6 +712,45 @@ export class PokemonMergeGame {
     ctx.lineTo(this.width, this.gameOverLineY)
     ctx.stroke()
     ctx.restore()
+  }
+
+  // A "charged" tile (buildFamily2) reuses an earlier stage's sprite, so it
+  // needs some other signal that it's progress — a pulsing golden halo plus
+  // a slowly-rotating dashed ring, drawn with additive blending so it reads
+  // as a glow around the sprite rather than a wash over it.
+  private drawGlowHalos() {
+    const now = this.engine.timing.timestamp
+    const pulse = 0.5 + 0.5 * Math.sin(now / 220)
+    const ctx = this.render.context
+    for (const body of this.engine.world.bodies) {
+      const plugin = pluginOf(body)
+      if (!plugin || !plugin.glow) continue
+      const r = body.circleRadius ?? 30
+      const haloRadius = r * (1.25 + 0.15 * pulse)
+
+      ctx.save()
+      ctx.globalCompositeOperation = 'lighter'
+
+      const grad = ctx.createRadialGradient(body.position.x, body.position.y, r * 0.6, body.position.x, body.position.y, haloRadius)
+      grad.addColorStop(0, withAlpha('#fde047', 0))
+      grad.addColorStop(0.75, withAlpha('#fde047', 0.5 + 0.2 * pulse))
+      grad.addColorStop(1, withAlpha('#fde047', 0))
+      ctx.fillStyle = grad
+      ctx.beginPath()
+      ctx.arc(body.position.x, body.position.y, haloRadius, 0, Math.PI * 2)
+      ctx.fill()
+
+      ctx.globalAlpha = 0.6 + 0.3 * pulse
+      ctx.strokeStyle = '#fef9c3'
+      ctx.lineWidth = 2 * this.scale
+      ctx.setLineDash([r * 0.35, r * 0.25])
+      ctx.lineDashOffset = -(now / 12) % (r * 2)
+      ctx.beginPath()
+      ctx.arc(body.position.x, body.position.y, r * 1.08, 0, Math.PI * 2)
+      ctx.stroke()
+
+      ctx.restore()
+    }
   }
 
   private drawParticles() {
@@ -920,6 +978,7 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
+      glow: tile.glow,
       isPreview: true,
     })
     this.previewBody = body
@@ -962,6 +1021,7 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
+      glow: tile.glow,
       ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
     })
     if (isSpecial) {
@@ -995,8 +1055,12 @@ export class PokemonMergeGame {
     // Two capstones can't merge into anything further — instead, any pair of
     // them slamming together (same family or not) sets off a blast that
     // crushes weaker pieces nearby, so it's still a dramatic moment rather
-    // than a dead end.
-    if (pa.tier >= MAX_TIER && pb.tier >= MAX_TIER) {
+    // than a dead end. Each side's own family decides what tier its capstone
+    // sits at (families with a shorter chain, like a 2-stage test line, cap
+    // out earlier than the usual tier 3).
+    const paMax = familyMaxTier(getFamily(pa.familyId))
+    const pbMax = familyMaxTier(getFamily(pb.familyId))
+    if (pa.tier >= paMax && pb.tier >= pbMax) {
       if ((pa.explodeCooldown ?? 0) > 0 || (pb.explodeCooldown ?? 0) > 0) return
       this.pendingExplosions.push([a, b])
       return
@@ -1004,13 +1068,17 @@ export class PokemonMergeGame {
 
     if (pa.merging || pb.merging) return
     if (pa.tier !== pb.tier) return
-    if (pa.tier >= MAX_TIER) return
+    if (pa.tier >= paMax) return
 
     const sameFamily = pa.familyId === pb.familyId
     // Two different families' final evolutions (e.g. Raichu and Luxray —
     // different chains, both "electric") can also fuse into that type's
-    // capstone, not just two of the exact same species.
-    const sameTypeFinal = pa.tier === GOAL_TIER && typeOf(pa.familyId) === typeOf(pb.familyId)
+    // capstone, not just two of the exact same species. Each side must be
+    // at its OWN family's goal tier, not just numerically equal — a 2-stage
+    // family's capstone tier can coincide with a 3-stage family's goal tier.
+    const paGoal = familyGoalTier(getFamily(pa.familyId))
+    const pbGoal = familyGoalTier(getFamily(pb.familyId))
+    const sameTypeFinal = pa.tier === paGoal && pb.tier === pbGoal && typeOf(pa.familyId) === typeOf(pb.familyId)
     if (!sameFamily && !sameTypeFinal) return
 
     pa.merging = true
@@ -1196,7 +1264,7 @@ export class PokemonMergeGame {
 
     const sameFamily = pa.familyId === pb.familyId
     const resultFamilyId = sameFamily ? pa.familyId : typeOf(pa.familyId)
-    const newTier = sameFamily ? pa.tier + 1 : MAX_TIER
+    const newTier = sameFamily ? pa.tier + 1 : familyMaxTier(getFamily(resultFamilyId))
     this.spawnMergeEffect(resultFamilyId, midX, midY)
 
     const tile = getTile(resultFamilyId, newTier)
@@ -1219,6 +1287,7 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
+      glow: tile.glow,
     })
     Matter.Body.setVelocity(newBody, { x: 0, y: -1.5 * this.scale })
     Matter.Composite.add(this.engine.world, newBody)
@@ -1227,11 +1296,12 @@ export class PokemonMergeGame {
     this.score += tile.scoreValue
     this.callbacks.onScoreChange(this.score)
 
-    if (newTier === GOAL_TIER && tile.familyId === this.currentFamily().id) {
+    const resultFamily = getFamily(tile.familyId)
+    if (newTier === familyGoalTier(resultFamily) && tile.familyId === this.currentFamily().id) {
       this.beginCelebration(tile.familyId, midX, midY)
       return true
     }
-    if (newTier === MAX_TIER) {
+    if (newTier === familyMaxTier(resultFamily)) {
       this.beginCapstoneBonus(tile.familyId, midX, midY)
       return true
     }
@@ -1860,7 +1930,7 @@ export class PokemonMergeGame {
     const groups = new Map<string, Matter.Body[]>()
     for (const body of bodies) {
       const plugin = pluginOf(body)!
-      if (plugin.tier >= MAX_TIER) continue
+      if (plugin.tier >= familyMaxTier(getFamily(plugin.familyId))) continue
       const key = `${plugin.familyId}-${plugin.tier}`
       const list = groups.get(key) ?? []
       list.push(body)

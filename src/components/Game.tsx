@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { PokemonMergeGame } from '../game/engine'
-import { FAMILIES, GOAL_TIER, MAX_TIER, EEVEE_FAMILY_ID, getTile, getFamily, getLevelOrder } from '../data/families'
+import {
+  FAMILIES,
+  EEVEE_FAMILY_ID,
+  getTile,
+  getFamily,
+  getLevelOrder,
+  familyGoalTier,
+  familyMaxTier,
+} from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
 
 const BEST_SCORE_KEY = 'pokemon-merge-best-score'
@@ -148,8 +156,8 @@ export default function Game() {
 
   const nowTile = getTile(dropFamilyId, dropTier)
   const nextTile = getTile(nextFamilyId, nextTier)
-  const goalTile = getTile(familyId, GOAL_TIER)
   const goalFamily = getFamily(familyId)
+  const goalTile = getTile(familyId, familyGoalTier(goalFamily))
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
   return (
@@ -558,7 +566,7 @@ function CapstonePowerModal({
   onChoose: (id: PowerId) => void
 }) {
   const isEeveeTrade = familyId === EEVEE_FAMILY_ID
-  const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, MAX_TIER)
+  const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, familyMaxTier(getFamily(familyId)))
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">

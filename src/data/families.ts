@@ -9,6 +9,10 @@ export type Tile = {
   sprite: string
   spriteSize: number
   scoreValue: number
+  // Set for a "charged" tile that reuses an earlier real stage's sprite
+  // rather than a new species — the engine draws a pulsing halo around it
+  // so it still reads as distinct progress. See buildFamily2.
+  glow?: boolean
 }
 
 export type Family = {
@@ -16,14 +20,29 @@ export type Family = {
   name: string
   color: string
   tiles: Tile[]
+  // Unset for the (overwhelming) common case of a 3-real-stage family —
+  // those fall back to the global GOAL_TIER/MAX_TIER below. A family built
+  // with a shorter real chain (see buildFamily2) sets these explicitly so
+  // its own goal/capstone land at the right tier instead.
+  goalTier?: number
+  maxTier?: number
 }
 
 const TIER_RADII = [26, 46, 90, 116]
 const TIER_SCORE = [1, 4, 14, 40]
 
-// Tier 2 (the final real evolution, e.g. Raichu) is this level's goal.
+// Tier 2 (the final real evolution, e.g. Raichu) is this level's goal, for
+// every normal (3-real-stage) family — the vast majority of the roster.
 export const GOAL_TIER = 2
 export const MAX_TIER = 3
+
+export function familyGoalTier(family: Family): number {
+  return family.goalTier ?? GOAL_TIER
+}
+
+export function familyMaxTier(family: Family): number {
+  return family.maxTier ?? MAX_TIER
+}
 
 function capstoneSprite(hex: string, glyph: string): string {
   const svg = `
@@ -83,6 +102,65 @@ function buildFamily(
     scoreValue: TIER_SCORE[3],
   })
   return { id, name, color, tiles }
+}
+
+// For a real chain with only 2 stages — the majority of the Pokemon roster
+// (full 3-stage lines are the minority). Rather than skipping a tier, each
+// real stage gets a "glowing" tier first: the same sprite again, just with a
+// pulsing halo drawn around it (see engine.ts's drawGlowHalos). That keeps
+// the merge effort before each real evolution the same as a genuine 3rd
+// stage would take. The glowing 2nd stage IS the capstone — there's no
+// invented 3rd species; Vulpix -> Glowing Vulpix -> Ninetales -> Glowing
+// Ninetales, 4 tiers total, same shape as a normal 3-stage family.
+function buildFamily2(id: string, name: string, color: string, dexIds: [number, number], stageNames: [string, string]): Family {
+  collectedDexIds.push(...dexIds)
+  const goalTier = 2
+  const maxTier = 3
+  const tiles: Tile[] = [
+    {
+      id: `${id}-0`,
+      name: stageNames[0],
+      familyId: id,
+      tier: 0,
+      radius: TIER_RADII[0],
+      sprite: localSprite(dexIds[0]),
+      spriteSize: 475,
+      scoreValue: TIER_SCORE[0],
+    },
+    {
+      id: `${id}-1`,
+      name: `Glowing ${stageNames[0]}`,
+      familyId: id,
+      tier: 1,
+      radius: TIER_RADII[1],
+      sprite: localSprite(dexIds[0]),
+      spriteSize: 475,
+      scoreValue: TIER_SCORE[1],
+      glow: true,
+    },
+    {
+      id: `${id}-2`,
+      name: stageNames[1],
+      familyId: id,
+      tier: 2,
+      radius: TIER_RADII[2],
+      sprite: localSprite(dexIds[1]),
+      spriteSize: 475,
+      scoreValue: TIER_SCORE[2],
+    },
+    {
+      id: `${id}-3`,
+      name: `Glowing ${stageNames[1]}`,
+      familyId: id,
+      tier: 3,
+      radius: TIER_RADII[3],
+      sprite: localSprite(dexIds[1]),
+      spriteSize: 475,
+      scoreValue: TIER_SCORE[3],
+      glow: true,
+    },
+  ]
+  return { id, name, color, tiles, goalTier, maxTier }
 }
 
 // Level order: FAMILIES[0] is level 1, FAMILIES[1] is level 2, etc.
@@ -1068,6 +1146,248 @@ export const FAMILIES: Family[] = [
     'Lunashroud',
     '🌙',
   ),
+  // 2-real-stage families (buildFamily2) — Vulpix has only one evolution, so
+  // its chain is Vulpix -> Glowing Vulpix -> Ninetales (goal) -> Glowing
+  // Ninetales (capstone), matching a normal family's 4-tier depth.
+  buildFamily2('fire11', 'Fire (Vulpix)', '#fdba74', [37, 38], ['Vulpix', 'Ninetales']),
+
+  // ---- 2-real-stage families (buildFamily2) ----
+  // The rest of the roster's 2-stage lines: species with exactly one real
+  // evolution. Each still takes 4 merges to cap out, same as a normal
+  // 3-stage family — see buildFamily2's own comment for how.
+  buildFamily2('normal8', 'Normal (Rattata)', '#b8936d', [19, 20], ['Rattata', 'Raticate']),
+  buildFamily2('normal9', 'Normal (Spearow)', '#c5a897', [21, 22], ['Spearow', 'Fearow']),
+  buildFamily2('poison4', 'Poison (Ekans)', '#b154d3', [23, 24], ['Ekans', 'Arbok']),
+  buildFamily2('ground3', 'Ground (Sandshrew)', '#9e5b33', [27, 28], ['Sandshrew', 'Sandslash']),
+  buildFamily2('bug8', 'Bug (Paras)', '#97d421', [46, 47], ['Paras', 'Parasect']),
+  buildFamily2('bug9', 'Bug (Venonat)', '#7dc32c', [48, 49], ['Venonat', 'Venomoth']),
+  buildFamily2('ground4', 'Ground (Diglett)', '#bfa146', [50, 51], ['Diglett', 'Dugtrio']),
+  buildFamily2('normal10', 'Normal (Meowth)', '#c6ad91', [52, 53], ['Meowth', 'Persian']),
+  buildFamily2('normal11', 'Normal (Meowth)', '#b79f74', [52, 863], ['Meowth', 'Perrserker']),
+  buildFamily2('water16', 'Water (Psyduck)', '#3d8dcd', [54, 55], ['Psyduck', 'Golduck']),
+  buildFamily2('fire12', 'Fire (Growlithe)', '#e1624b', [58, 59], ['Growlithe', 'Arcanine']),
+  buildFamily2('water17', 'Water (Tentacool)', '#2964b5', [72, 73], ['Tentacool', 'Tentacruel']),
+  buildFamily2('fire13', 'Fire (Ponyta)', '#be7b25', [77, 78], ['Ponyta', 'Rapidash']),
+  buildFamily2('normal12', "Normal (Farfetch'd)", '#c1b27b', [83, 865], ["Farfetch'd", "Sirfetch'd"]),
+  buildFamily2('normal13', 'Normal (Doduo)', '#c9aa97', [84, 85], ['Doduo', 'Dodrio']),
+  buildFamily2('water18', 'Water (Seel)', '#2597b7', [86, 87], ['Seel', 'Dewgong']),
+  buildFamily2('poison5', 'Poison (Grimer)', '#bb26d4', [88, 89], ['Grimer', 'Muk']),
+  buildFamily2('water19', 'Water (Shellder)', '#2085bb', [90, 91], ['Shellder', 'Cloyster']),
+  buildFamily2('rock6', 'Rock (Onix)', '#6a5643', [95, 208], ['Onix', 'Steelix']),
+  buildFamily2('psychic8', 'Psychic (Drowzee)', '#d34fa9', [96, 97], ['Drowzee', 'Hypno']),
+  buildFamily2('water20', 'Water (Krabby)', '#5ac2dd', [98, 99], ['Krabby', 'Kingler']),
+  buildFamily2('electric8', 'Electric (Voltorb)', '#e3e744', [100, 101], ['Voltorb', 'Electrode']),
+  buildFamily2('grass18', 'Grass (Exeggcute)', '#53c943', [102, 103], ['Exeggcute', 'Exeggutor']),
+  buildFamily2('ground5', 'Ground (Cubone)', '#9e7634', [104, 105], ['Cubone', 'Marowak']),
+  buildFamily2('normal14', 'Normal (Lickitung)', '#bb9b74', [108, 463], ['Lickitung', 'Lickilicky']),
+  buildFamily2('poison6', 'Poison (Koffing)', '#be2dbc', [109, 110], ['Koffing', 'Weezing']),
+  buildFamily2('grass19', 'Grass (Tangela)', '#64d83f', [114, 465], ['Tangela', 'Tangrowth']),
+  buildFamily2('water21', 'Water (Goldeen)', '#366ec7', [118, 119], ['Goldeen', 'Seaking']),
+  buildFamily2('water22', 'Water (Staryu)', '#519cdc', [120, 121], ['Staryu', 'Starmie']),
+  buildFamily2('bug10', 'Bug (Scyther)', '#b7da58', [123, 212], ['Scyther', 'Scizor']),
+  buildFamily2('bug11', 'Bug (Scyther)', '#b0c81a', [123, 900], ['Scyther', 'Kleavor']),
+  buildFamily2('water23', 'Water (Magikarp)', '#2e91c3', [129, 130], ['Magikarp', 'Gyarados']),
+  buildFamily2('rock7', 'Rock (Omanyte)', '#926954', [138, 139], ['Omanyte', 'Omastar']),
+  buildFamily2('rock8', 'Rock (Kabuto)', '#805f49', [140, 141], ['Kabuto', 'Kabutops']),
+  buildFamily2('normal15', 'Normal (Sentret)', '#beaa81', [161, 162], ['Sentret', 'Furret']),
+  buildFamily2('normal16', 'Normal (Hoothoot)', '#bb8169', [163, 164], ['Hoothoot', 'Noctowl']),
+  buildFamily2('bug12', 'Bug (Ledyba)', '#84e634', [165, 166], ['Ledyba', 'Ledian']),
+  buildFamily2('bug13', 'Bug (Spinarak)', '#8fe11e', [167, 168], ['Spinarak', 'Ariados']),
+  buildFamily2('water24', 'Water (Chinchou)', '#22b3d4', [170, 171], ['Chinchou', 'Lanturn']),
+  buildFamily2('psychic9', 'Psychic (Natu)', '#e14bc4', [177, 178], ['Natu', 'Xatu']),
+  buildFamily2('normal17', 'Normal (Aipom)', '#ae8e78', [190, 424], ['Aipom', 'Ambipom']),
+  buildFamily2('grass20', 'Grass (Sunkern)', '#78cc22', [191, 192], ['Sunkern', 'Sunflora']),
+  buildFamily2('bug14', 'Bug (Yanma)', '#afd633', [193, 469], ['Yanma', 'Yanmega']),
+  buildFamily2('water25', 'Water (Wooper)', '#2f6bc2', [194, 195], ['Wooper', 'Quagsire']),
+  buildFamily2('water26', 'Water (Wooper)', '#409ee7', [194, 980], ['Wooper', 'Clodsire']),
+  buildFamily2('dark5', 'Dark (Murkrow)', '#4f3f64', [198, 430], ['Murkrow', 'Honchkrow']),
+  buildFamily2('ghost4', 'Ghost (Misdreavus)', '#4529b2', [200, 429], ['Misdreavus', 'Mismagius']),
+  buildFamily2('normal18', 'Normal (Girafarig)', '#bb9c82', [203, 981], ['Girafarig', 'Farigiraf']),
+  buildFamily2('bug15', 'Bug (Pineco)', '#d0e52f', [204, 205], ['Pineco', 'Forretress']),
+  buildFamily2('normal19', 'Normal (Dunsparce)', '#b5986d', [206, 982], ['Dunsparce', 'Dudunsparce']),
+  buildFamily2('ground6', 'Ground (Gligar)', '#c27734', [207, 472], ['Gligar', 'Gliscor']),
+  buildFamily2('fairy5', 'Fairy (Snubbull)', '#e1258f', [209, 210], ['Snubbull', 'Granbull']),
+  buildFamily2('water27', 'Water (Qwilfish)', '#44a3ce', [211, 904], ['Qwilfish', 'Overqwil']),
+  buildFamily2('dark6', 'Dark (Sneasel)', '#323152', [215, 461], ['Sneasel', 'Weavile']),
+  buildFamily2('dark7', 'Dark (Sneasel)', '#362f5a', [215, 903], ['Sneasel', 'Sneasler']),
+  buildFamily2('fire14', 'Fire (Slugma)', '#af662e', [218, 219], ['Slugma', 'Magcargo']),
+  buildFamily2('water28', 'Water (Corsola)', '#54b0d0', [222, 864], ['Corsola', 'Cursola']),
+  buildFamily2('water29', 'Water (Remoraid)', '#215bce', [223, 224], ['Remoraid', 'Octillery']),
+  buildFamily2('dark8', 'Dark (Houndour)', '#4f3b72', [228, 229], ['Houndour', 'Houndoom']),
+  buildFamily2('ground7', 'Ground (Phanpy)', '#c8b849', [231, 232], ['Phanpy', 'Donphan']),
+  buildFamily2('normal20', 'Normal (Stantler)', '#c0ae81', [234, 899], ['Stantler', 'Wyrdeer']),
+  buildFamily2('fighting4', 'Fighting (Tyrogue)', '#cc4c1f', [236, 106], ['Tyrogue', 'Hitmonlee']),
+  buildFamily2('fighting5', 'Fighting (Tyrogue)', '#c31c34', [236, 107], ['Tyrogue', 'Hitmonchan']),
+  buildFamily2('fighting6', 'Fighting (Tyrogue)', '#e04446', [236, 237], ['Tyrogue', 'Hitmontop']),
+  buildFamily2('ice4', 'Ice (Smoochum)', '#318cca', [238, 124], ['Smoochum', 'Jynx']),
+  buildFamily2('dark9', 'Dark (Poochyena)', '#2e3059', [261, 262], ['Poochyena', 'Mightyena']),
+  buildFamily2('normal21', 'Normal (Taillow)', '#b7996f', [276, 277], ['Taillow', 'Swellow']),
+  buildFamily2('water30', 'Water (Wingull)', '#3b9bd0', [278, 279], ['Wingull', 'Pelipper']),
+  buildFamily2('bug16', 'Bug (Surskit)', '#84df30', [283, 284], ['Surskit', 'Masquerain']),
+  buildFamily2('grass21', 'Grass (Shroomish)', '#6dd62e', [285, 286], ['Shroomish', 'Breloom']),
+  buildFamily2('bug17', 'Bug (Nincada)', '#ace454', [290, 291], ['Nincada', 'Ninjask']),
+  buildFamily2('bug18', 'Bug (Nincada)', '#bdde44', [290, 292], ['Nincada', 'Shedinja']),
+  buildFamily2('fighting7', 'Fighting (Makuhita)', '#df695a', [296, 297], ['Makuhita', 'Hariyama']),
+  buildFamily2('rock9', 'Rock (Nosepass)', '#8e6556', [299, 476], ['Nosepass', 'Probopass']),
+  buildFamily2('normal22', 'Normal (Skitty)', '#c6ad98', [300, 301], ['Skitty', 'Delcatty']),
+  buildFamily2('fighting8', 'Fighting (Meditite)', '#cf3150', [307, 308], ['Meditite', 'Medicham']),
+  buildFamily2('electric9', 'Electric (Electrike)', '#d2c22b', [309, 310], ['Electrike', 'Manectric']),
+  buildFamily2('poison7', 'Poison (Gulpin)', '#9d38e0', [316, 317], ['Gulpin', 'Swalot']),
+  buildFamily2('water31', 'Water (Carvanha)', '#2e8ce4', [318, 319], ['Carvanha', 'Sharpedo']),
+  buildFamily2('water32', 'Water (Wailmer)', '#5483d5', [320, 321], ['Wailmer', 'Wailord']),
+  buildFamily2('fire15', 'Fire (Numel)', '#e15c22', [322, 323], ['Numel', 'Camerupt']),
+  buildFamily2('psychic10', 'Psychic (Spoink)', '#c9417e', [325, 326], ['Spoink', 'Grumpig']),
+  buildFamily2('grass22', 'Grass (Cacnea)', '#40c519', [331, 332], ['Cacnea', 'Cacturne']),
+  buildFamily2('normal23', 'Normal (Swablu)', '#cea794', [333, 334], ['Swablu', 'Altaria']),
+  buildFamily2('water33', 'Water (Barboach)', '#45b1d2', [339, 340], ['Barboach', 'Whiscash']),
+  buildFamily2('water34', 'Water (Corphish)', '#5cabdc', [341, 342], ['Corphish', 'Crawdaunt']),
+  buildFamily2('ground8', 'Ground (Baltoy)', '#af8f39', [343, 344], ['Baltoy', 'Claydol']),
+  buildFamily2('rock10', 'Rock (Lileep)', '#745548', [345, 346], ['Lileep', 'Cradily']),
+  buildFamily2('rock11', 'Rock (Anorith)', '#755b48', [347, 348], ['Anorith', 'Armaldo']),
+  buildFamily2('water35', 'Water (Feebas)', '#4795e7', [349, 350], ['Feebas', 'Milotic']),
+  buildFamily2('ghost5', 'Ghost (Shuppet)', '#963ece', [353, 354], ['Shuppet', 'Banette']),
+  buildFamily2('psychic11', 'Psychic (Wynaut)', '#b2289e', [360, 202], ['Wynaut', 'Wobbuffet']),
+  buildFamily2('ice5', 'Ice (Snorunt)', '#2f89ab', [361, 362], ['Snorunt', 'Glalie']),
+  buildFamily2('ice6', 'Ice (Snorunt)', '#4dbfd4', [361, 478], ['Snorunt', 'Froslass']),
+  buildFamily2('water36', 'Water (Clamperl)', '#356ad3', [366, 367], ['Clamperl', 'Huntail']),
+  buildFamily2('water37', 'Water (Clamperl)', '#45b8e0', [366, 368], ['Clamperl', 'Gorebyss']),
+  buildFamily2('normal24', 'Normal (Bidoof)', '#b4a67e', [399, 400], ['Bidoof', 'Bibarel']),
+  buildFamily2('bug19', 'Bug (Kricketot)', '#abb72e', [401, 402], ['Kricketot', 'Kricketune']),
+  buildFamily2('rock12', 'Rock (Cranidos)', '#836644', [408, 409], ['Cranidos', 'Rampardos']),
+  buildFamily2('rock13', 'Rock (Shieldon)', '#8b764b', [410, 411], ['Shieldon', 'Bastiodon']),
+  buildFamily2('bug20', 'Bug (Burmy)', '#84c227', [412, 413], ['Burmy', 'Wormadam']),
+  buildFamily2('bug21', 'Bug (Burmy)', '#7ed234', [412, 414], ['Burmy', 'Mothim']),
+  buildFamily2('bug22', 'Bug (Combee)', '#abbf37', [415, 416], ['Combee', 'Vespiquen']),
+  buildFamily2('water38', 'Water (Buizel)', '#49b3e3', [418, 419], ['Buizel', 'Floatzel']),
+  buildFamily2('grass23', 'Grass (Cherubi)', '#3fcc2f', [420, 421], ['Cherubi', 'Cherrim']),
+  buildFamily2('water39', 'Water (Shellos)', '#2277b9', [422, 423], ['Shellos', 'Gastrodon']),
+  buildFamily2('ghost6', 'Ghost (Drifloon)', '#712cbc', [425, 426], ['Drifloon', 'Drifblim']),
+  buildFamily2('normal25', 'Normal (Buneary)', '#c9b18d', [427, 428], ['Buneary', 'Lopunny']),
+  buildFamily2('normal26', 'Normal (Glameow)', '#bda58e', [431, 432], ['Glameow', 'Purugly']),
+  buildFamily2('psychic12', 'Psychic (Chingling)', '#ba3395', [433, 358], ['Chingling', 'Chimecho']),
+  buildFamily2('poison8', 'Poison (Stunky)', '#a41bd1', [434, 435], ['Stunky', 'Skuntank']),
+  buildFamily2('steel5', 'Steel (Bronzor)', '#8997a9', [436, 437], ['Bronzor', 'Bronzong']),
+  buildFamily2('rock14', 'Rock (Bonsly)', '#805f53', [438, 185], ['Bonsly', 'Sudowoodo']),
+  buildFamily2('normal27', 'Normal (Munchlax)', '#b69684', [446, 143], ['Munchlax', 'Snorlax']),
+  buildFamily2('fighting9', 'Fighting (Riolu)', '#dd404b', [447, 448], ['Riolu', 'Lucario']),
+  buildFamily2('ground9', 'Ground (Hippopotas)', '#bf8a3a', [449, 450], ['Hippopotas', 'Hippowdon']),
+  buildFamily2('poison9', 'Poison (Skorupi)', '#c724de', [451, 452], ['Skorupi', 'Drapion']),
+  buildFamily2('poison10', 'Poison (Croagunk)', '#912bb0', [453, 454], ['Croagunk', 'Toxicroak']),
+  buildFamily2('water40', 'Water (Finneon)', '#246fbe', [456, 457], ['Finneon', 'Lumineon']),
+  buildFamily2('water41', 'Water (Mantyke)', '#3386b9', [458, 226], ['Mantyke', 'Mantine']),
+  buildFamily2('grass24', 'Grass (Snover)', '#98dd4b', [459, 460], ['Snover', 'Abomasnow']),
+  buildFamily2('water42', 'Water (Phione)', '#2892b6', [489, 490], ['Phione', 'Manaphy']),
+  buildFamily2('normal28', 'Normal (Patrat)', '#cbbd90', [504, 505], ['Patrat', 'Watchog']),
+  buildFamily2('dark10', 'Dark (Purrloin)', '#2e2e4c', [509, 510], ['Purrloin', 'Liepard']),
+  buildFamily2('grass25', 'Grass (Pansage)', '#65c325', [511, 512], ['Pansage', 'Simisage']),
+  buildFamily2('fire16', 'Fire (Pansear)', '#b24831', [513, 514], ['Pansear', 'Simisear']),
+  buildFamily2('water43', 'Water (Panpour)', '#1f5ed9', [515, 516], ['Panpour', 'Simipour']),
+  buildFamily2('psychic13', 'Psychic (Munna)', '#d2218b', [517, 518], ['Munna', 'Musharna']),
+  buildFamily2('electric10', 'Electric (Blitzle)', '#d89d55', [522, 523], ['Blitzle', 'Zebstrika']),
+  buildFamily2('psychic14', 'Psychic (Woobat)', '#c31b6a', [527, 528], ['Woobat', 'Swoobat']),
+  buildFamily2('ground10', 'Ground (Drilbur)', '#c39e4e', [529, 530], ['Drilbur', 'Excadrill']),
+  buildFamily2('grass26', 'Grass (Cottonee)', '#51de21', [546, 547], ['Cottonee', 'Whimsicott']),
+  buildFamily2('grass27', 'Grass (Petilil)', '#66de56', [548, 549], ['Petilil', 'Lilligant']),
+  buildFamily2('water44', 'Water (Basculin)', '#3084d3', [550, 902], ['Basculin', 'Basculegion']),
+  buildFamily2('fire17', 'Fire (Darumaka)', '#e04f47', [554, 555], ['Darumaka', 'Darmanitan']),
+  buildFamily2('bug23', 'Bug (Dwebble)', '#b4d853', [557, 558], ['Dwebble', 'Crustle']),
+  buildFamily2('dark11', 'Dark (Scraggy)', '#443061', [559, 560], ['Scraggy', 'Scrafty']),
+  buildFamily2('ghost7', 'Ghost (Yamask)', '#8149e8', [562, 563], ['Yamask', 'Cofagrigus']),
+  buildFamily2('ghost8', 'Ghost (Yamask)', '#7457d5', [562, 867], ['Yamask', 'Runerigus']),
+  buildFamily2('water45', 'Water (Tirtouga)', '#2ba1e2', [564, 565], ['Tirtouga', 'Carracosta']),
+  buildFamily2('rock15', 'Rock (Archen)', '#72523e', [566, 567], ['Archen', 'Archeops']),
+  buildFamily2('poison11', 'Poison (Trubbish)', '#8721c0', [568, 569], ['Trubbish', 'Garbodor']),
+  buildFamily2('dark12', 'Dark (Zorua)', '#352d47', [570, 571], ['Zorua', 'Zoroark']),
+  buildFamily2('normal29', 'Normal (Minccino)', '#c8b79b', [572, 573], ['Minccino', 'Cinccino']),
+  buildFamily2('water46', 'Water (Ducklett)', '#36bbe3', [580, 581], ['Ducklett', 'Swanna']),
+  buildFamily2('normal30', 'Normal (Deerling)', '#caa998', [585, 586], ['Deerling', 'Sawsbuck']),
+  buildFamily2('bug24', 'Bug (Karrablast)', '#a4d74f', [588, 589], ['Karrablast', 'Escavalier']),
+  buildFamily2('grass28', 'Grass (Foongus)', '#9fdd51', [590, 591], ['Foongus', 'Amoonguss']),
+  buildFamily2('water47', 'Water (Frillish)', '#5085e2', [592, 593], ['Frillish', 'Jellicent']),
+  buildFamily2('bug25', 'Bug (Joltik)', '#7fd729', [595, 596], ['Joltik', 'Galvantula']),
+  buildFamily2('grass29', 'Grass (Ferroseed)', '#66b928', [597, 598], ['Ferroseed', 'Ferrothorn']),
+  buildFamily2('psychic15', 'Psychic (Elgyem)', '#e337ce', [605, 606], ['Elgyem', 'Beheeyem']),
+  buildFamily2('ice7', 'Ice (Cubchoo)', '#1dc6ca', [613, 614], ['Cubchoo', 'Beartic']),
+  buildFamily2('bug26', 'Bug (Shelmet)', '#a5b530', [616, 617], ['Shelmet', 'Accelgor']),
+  buildFamily2('fighting10', 'Fighting (Mienfoo)', '#e96a4d', [619, 620], ['Mienfoo', 'Mienshao']),
+  buildFamily2('ground11', 'Ground (Golett)', '#b9a654', [622, 623], ['Golett', 'Golurk']),
+  buildFamily2('normal31', 'Normal (Rufflet)', '#cdac91', [627, 628], ['Rufflet', 'Braviary']),
+  buildFamily2('dark13', 'Dark (Vullaby)', '#2d264d', [629, 630], ['Vullaby', 'Mandibuzz']),
+  buildFamily2('bug27', 'Bug (Larvesta)', '#a2cc23', [636, 637], ['Larvesta', 'Volcarona']),
+  buildFamily2('normal32', 'Normal (Bunnelby)', '#c4ac8a', [659, 660], ['Bunnelby', 'Diggersby']),
+  buildFamily2('fire18', 'Fire (Litleo)', '#bd5921', [667, 668], ['Litleo', 'Pyroar']),
+  buildFamily2('grass30', 'Grass (Skiddo)', '#4be336', [672, 673], ['Skiddo', 'Gogoat']),
+  buildFamily2('fighting11', 'Fighting (Pancham)', '#b52a21', [674, 675], ['Pancham', 'Pangoro']),
+  buildFamily2('psychic16', 'Psychic (Espurr)', '#db5fbc', [677, 678], ['Espurr', 'Meowstic']),
+  buildFamily2('fairy6', 'Fairy (Spritzee)', '#db5fb8', [682, 683], ['Spritzee', 'Aromatisse']),
+  buildFamily2('fairy7', 'Fairy (Swirlix)', '#c43562', [684, 685], ['Swirlix', 'Slurpuff']),
+  buildFamily2('dark14', 'Dark (Inkay)', '#2b2c4e', [686, 687], ['Inkay', 'Malamar']),
+  buildFamily2('rock16', 'Rock (Binacle)', '#6d553b', [688, 689], ['Binacle', 'Barbaracle']),
+  buildFamily2('poison12', 'Poison (Skrelp)', '#ca47c4', [690, 691], ['Skrelp', 'Dragalge']),
+  buildFamily2('water48', 'Water (Clauncher)', '#4b9de2', [692, 693], ['Clauncher', 'Clawitzer']),
+  buildFamily2('electric11', 'Electric (Helioptile)', '#e3ae3f', [694, 695], ['Helioptile', 'Heliolisk']),
+  buildFamily2('rock17', 'Rock (Tyrunt)', '#7f6a44', [696, 697], ['Tyrunt', 'Tyrantrum']),
+  buildFamily2('rock18', 'Rock (Amaura)', '#6f4e44', [698, 699], ['Amaura', 'Aurorus']),
+  buildFamily2('ghost9', 'Ghost (Phantump)', '#a447da', [708, 709], ['Phantump', 'Trevenant']),
+  buildFamily2('ghost10', 'Ghost (Pumpkaboo)', '#6527ba', [710, 711], ['Pumpkaboo', 'Gourgeist']),
+  buildFamily2('ice8', 'Ice (Bergmite)', '#30b2a5', [712, 713], ['Bergmite', 'Avalugg']),
+  buildFamily2('flying7', 'Flying (Noibat)', '#3f74d4', [714, 715], ['Noibat', 'Noivern']),
+  buildFamily2('normal33', 'Normal (Yungoos)', '#bfa975', [734, 735], ['Yungoos', 'Gumshoos']),
+  buildFamily2('fighting12', 'Fighting (Crabrawler)', '#ca404c', [739, 740], ['Crabrawler', 'Crabominable']),
+  buildFamily2('bug28', 'Bug (Cutiefly)', '#9ce04b', [742, 743], ['Cutiefly', 'Ribombee']),
+  buildFamily2('rock19', 'Rock (Rockruff)', '#7f5c48', [744, 745], ['Rockruff', 'Lycanroc']),
+  buildFamily2('poison13', 'Poison (Mareanie)', '#ca34d7', [747, 748], ['Mareanie', 'Toxapex']),
+  buildFamily2('ground12', 'Ground (Mudbray)', '#ba7138', [749, 750], ['Mudbray', 'Mudsdale']),
+  buildFamily2('water49', 'Water (Dewpider)', '#2d99ce', [751, 752], ['Dewpider', 'Araquanid']),
+  buildFamily2('grass31', 'Grass (Fomantis)', '#59cb33', [753, 754], ['Fomantis', 'Lurantis']),
+  buildFamily2('grass32', 'Grass (Morelull)', '#8be74e', [755, 756], ['Morelull', 'Shiinotic']),
+  buildFamily2('poison14', 'Poison (Salandit)', '#9532af', [757, 758], ['Salandit', 'Salazzle']),
+  buildFamily2('normal34', 'Normal (Stufful)', '#b48e79', [759, 760], ['Stufful', 'Bewear']),
+  buildFamily2('bug29', 'Bug (Wimpod)', '#dbe254', [767, 768], ['Wimpod', 'Golisopod']),
+  buildFamily2('ghost11', 'Ghost (Sandygast)', '#732fab', [769, 770], ['Sandygast', 'Palossand']),
+  buildFamily2('normal35', 'Normal (Type: Null)', '#c6a587', [772, 773], ['Type: Null', 'Silvally']),
+  buildFamily2('poison15', 'Poison (Poipole)', '#a133d8', [803, 804], ['Poipole', 'Naganadel']),
+  buildFamily2('normal36', 'Normal (Skwovet)', '#c2b095', [819, 820], ['Skwovet', 'Greedent']),
+  buildFamily2('dark15', 'Dark (Nickit)', '#37284e', [827, 828], ['Nickit', 'Thievul']),
+  buildFamily2('grass33', 'Grass (Gossifleur)', '#a1db5f', [829, 830], ['Gossifleur', 'Eldegoss']),
+  buildFamily2('normal37', 'Normal (Wooloo)', '#bdab7b', [831, 832], ['Wooloo', 'Dubwool']),
+  buildFamily2('water50', 'Water (Chewtle)', '#3b70d7', [833, 834], ['Chewtle', 'Drednaw']),
+  buildFamily2('electric12', 'Electric (Yamper)', '#cbb231', [835, 836], ['Yamper', 'Boltund']),
+  buildFamily2('ground13', 'Ground (Silicobra)', '#c78c40', [843, 844], ['Silicobra', 'Sandaconda']),
+  buildFamily2('water51', 'Water (Arrokuda)', '#4ec0e6', [846, 847], ['Arrokuda', 'Barraskewda']),
+  buildFamily2('electric13', 'Electric (Toxel)', '#dcd53e', [848, 849], ['Toxel', 'Toxtricity']),
+  buildFamily2('fire19', 'Fire (Sizzlipede)', '#d35732', [850, 851], ['Sizzlipede', 'Centiskorch']),
+  buildFamily2('fighting13', 'Fighting (Clobbopus)', '#e47b4b', [852, 853], ['Clobbopus', 'Grapploct']),
+  buildFamily2('ghost12', 'Ghost (Sinistea)', '#b047e2', [854, 855], ['Sinistea', 'Polteageist']),
+  buildFamily2('fairy8', 'Fairy (Milcery)', '#e5418d', [868, 869], ['Milcery', 'Alcremie']),
+  buildFamily2('ice9', 'Ice (Snom)', '#2fa5d9', [872, 873], ['Snom', 'Frosmoth']),
+  buildFamily2('steel6', 'Steel (Cufant)', '#6e889e', [878, 879], ['Cufant', 'Copperajah']),
+  buildFamily2('steel7', 'Steel (Duraludon)', '#7a94a1', [884, 1018], ['Duraludon', 'Archaludon']),
+  buildFamily2('fighting14', 'Fighting (Kubfu)', '#e25e3b', [891, 892], ['Kubfu', 'Urshifu']),
+  buildFamily2('normal38', 'Normal (Lechonk)', '#be9378', [915, 916], ['Lechonk', 'Oinkologne']),
+  buildFamily2('bug30', 'Bug (Tarountula)', '#9bd832', [917, 918], ['Tarountula', 'Spidops']),
+  buildFamily2('bug31', 'Bug (Nymble)', '#abd71d', [919, 920], ['Nymble', 'Lokix']),
+  buildFamily2('normal39', 'Normal (Tandemaus)', '#ba9268', [924, 925], ['Tandemaus', 'Maushold']),
+  buildFamily2('fairy9', 'Fairy (Fidough)', '#aa2e77', [926, 927], ['Fidough', 'Dachsbun']),
+  buildFamily2('fire20', 'Fire (Charcadet)', '#b76731', [935, 936], ['Charcadet', 'Armarouge']),
+  buildFamily2('fire21', 'Fire (Charcadet)', '#c17621', [935, 937], ['Charcadet', 'Ceruledge']),
+  buildFamily2('electric14', 'Electric (Tadbulb)', '#cb8435', [938, 939], ['Tadbulb', 'Bellibolt']),
+  buildFamily2('electric15', 'Electric (Wattrel)', '#dfa027', [940, 941], ['Wattrel', 'Kilowattrel']),
+  buildFamily2('dark16', 'Dark (Maschiff)', '#483a70', [942, 943], ['Maschiff', 'Mabosstiff']),
+  buildFamily2('poison16', 'Poison (Shroodle)', '#c840be', [944, 945], ['Shroodle', 'Grafaiai']),
+  buildFamily2('grass34', 'Grass (Bramblin)', '#36d625', [946, 947], ['Bramblin', 'Brambleghast']),
+  buildFamily2('ground14', 'Ground (Toedscool)', '#b18b40', [948, 949], ['Toedscool', 'Toedscruel']),
+  buildFamily2('grass35', 'Grass (Capsakid)', '#60c941', [951, 952], ['Capsakid', 'Scovillain']),
+  buildFamily2('bug32', 'Bug (Rellor)', '#d1dc56', [953, 954], ['Rellor', 'Rabsca']),
+  buildFamily2('psychic17', 'Psychic (Flittle)', '#db3a9e', [955, 956], ['Flittle', 'Espathra']),
+  buildFamily2('water52', 'Water (Wiglett)', '#228bcb', [960, 961], ['Wiglett', 'Wugtrio']),
+  buildFamily2('water53', 'Water (Finizen)', '#1a70c8', [963, 964], ['Finizen', 'Palafin']),
+  buildFamily2('steel8', 'Steel (Varoom)', '#6c779d', [965, 966], ['Varoom', 'Revavroom']),
+  buildFamily2('rock20', 'Rock (Glimmet)', '#945e4e', [969, 970], ['Glimmet', 'Glimmora']),
+  buildFamily2('ghost13', 'Ghost (Greavard)', '#623cc7', [971, 972], ['Greavard', 'Houndstone']),
+  buildFamily2('ice10', 'Ice (Cetoddle)', '#60c5d8', [974, 975], ['Cetoddle', 'Cetitan']),
+  buildFamily2('ghost14', 'Ghost (Gimmighoul)', '#742cce', [999, 1000], ['Gimmighoul', 'Gholdengo']),
+  buildFamily2('grass36', 'Grass (Poltchageist)', '#79cc47', [1012, 1013], ['Poltchageist', 'Sinistcha']),
 ]
 
 export const ALL_DEX_IDS = Array.from(new Set(collectedDexIds))
