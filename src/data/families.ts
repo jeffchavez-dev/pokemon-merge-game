@@ -1111,6 +1111,31 @@ export function eeveeTradeValue(tier: number): number {
   return EEVEE_RARE_TIERS.has(tier) ? 2 : 1
 }
 
+// Mew: the same kind of side-collectible as Eevee (outside FAMILIES/the
+// level rotation, never merges), but a single mythical with no evolution
+// forms — so it's just one tile rather than a tier-indexed array. Catching
+// it isn't banked for later; it triggers an immediate board-clearing blast
+// instead (see PokemonMergeGame.catchMew).
+export const MEW_FAMILY_ID = 'mew'
+
+export const MEW_TILE: Tile = {
+  id: 'mew-0',
+  name: 'Mew',
+  familyId: MEW_FAMILY_ID,
+  tier: 0,
+  radius: 46,
+  sprite: localShinySprite(151),
+  spriteSize: 475,
+  scoreValue: 20,
+}
+
+const MEW_PSEUDO_FAMILY: Family = {
+  id: MEW_FAMILY_ID,
+  name: 'Mew',
+  color: '#f9a8d4',
+  tiles: [MEW_TILE],
+}
+
 // The first 5 levels stay in a fixed, predictable order (Electric, Fire,
 // Water, Grass, Bug) so the early game teaches the mechanics consistently.
 // Everything after that is shuffled once per game session — so which type
@@ -1151,12 +1176,14 @@ export function getLevelFamily(levelIndex: number): Family {
 
 export function getTile(familyId: string, tier: number): Tile {
   if (familyId === EEVEE_FAMILY_ID) return EEVEELUTIONS[tier]
+  if (familyId === MEW_FAMILY_ID) return MEW_TILE
   const family = FAMILIES.find((f) => f.id === familyId)!
   return family.tiles.find((t) => t.tier === tier)!
 }
 
 export function getFamily(familyId: string): Family {
   if (familyId === EEVEE_FAMILY_ID) return EEVEE_PSEUDO_FAMILY
+  if (familyId === MEW_FAMILY_ID) return MEW_PSEUDO_FAMILY
   return FAMILIES.find((f) => f.id === familyId)!
 }
 

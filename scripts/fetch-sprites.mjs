@@ -49,7 +49,7 @@ const DEX_IDS = [
 
 // Eevee + its 8 evolutions render as shiny sprites (see families.ts) to make
 // the rare per-level catch feel special, so they need the shiny artwork too.
-const SHINY_DEX_IDS = [133, 134, 135, 136, 196, 197, 470, 471, 700]
+const SHINY_DEX_IDS = [133, 134, 135, 136, 196, 197, 470, 471, 700, 151]
 
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'public', 'pokemon')
 const SHINY_OUT_DIR = path.join(OUT_DIR, 'shiny')

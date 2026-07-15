@@ -30,6 +30,8 @@ export default function Game() {
   const [eeveeCaught, setEeveeCaught] = useState(0)
   const [eeveeBanner, setEeveeBanner] = useState(false)
   const [eeveeToast, setEeveeToast] = useState<string | null>(null)
+  const [mewBanner, setMewBanner] = useState(false)
+  const [mewToast, setMewToast] = useState<string | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -75,6 +77,14 @@ export default function Game() {
       onEeveeCaught: (name, value) => {
         setEeveeToast(`Caught shiny ${name}! +${value}`)
         setTimeout(() => setEeveeToast(null), 2000)
+      },
+      onMewLevelAnnounced: () => {
+        setMewBanner(true)
+        setTimeout(() => setMewBanner(false), 1800)
+      },
+      onMewCaught: () => {
+        setMewToast("Mew's psychic blast cleared the board!")
+        setTimeout(() => setMewToast(null), 2200)
       },
     })
     gameRef.current = game
@@ -185,6 +195,18 @@ export default function Game() {
           {eeveeToast && (
             <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-amber-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-amber-200 shadow-lg">
               {eeveeToast}
+            </div>
+          )}
+
+          {mewBanner && (
+            <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-pink-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-pink-200 shadow-lg">
+              A wild Mew appeared!
+            </div>
+          )}
+
+          {mewToast && (
+            <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-pink-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-pink-200 shadow-lg">
+              {mewToast}
             </div>
           )}
 

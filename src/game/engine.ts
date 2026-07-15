@@ -10,6 +10,7 @@ import {
   randomEeveelutionTier,
   eeveeTradeValue,
   EEVEE_FAMILY_ID,
+  MEW_FAMILY_ID,
   GOAL_TIER,
   MAX_TIER,
   type Tile,
@@ -36,11 +37,22 @@ const EXPLOSION_COOLDOWN_MS = 900
 // "boom" moment instead: a blast radius that crushes whatever weaker pieces
 // are caught nearby, rather than the two just bouncing off each other.
 const CAPSTONE_BLAST_RADIUS = 170
-// Every 3rd level, a wild Eevee is guaranteed in the queue. The longer it
-// sits uncaught, the more it tries to hop away — a few times, then it gives
-// up (so it stays winnable, just riskier the longer you wait).
-const EEVEE_HOP_INTERVAL_MS = 2200
-const EEVEE_MAX_HOPS = 3
+// Every 3rd level, a wild Eevee is guaranteed in the queue; every 5th level,
+// Mew is instead (Mew wins on the rare level that's a multiple of both).
+// Both keep hopping on this interval for as long as they're uncaught — they
+// never settle down and give up, so leaving them too long stays risky.
+const SPECIAL_HOP_INTERVAL_MS = 1100
+const MEW_LEVEL_INTERVAL = 5
+const EEVEE_LEVEL_INTERVAL = 3
+// Mew's catch is a screen-filling event rather than a local one.
+const MEW_BLAST_MS = 900
+
+// Collision categories: walls get their own category so the special
+// collectibles' mask can target "walls only" — they need to still bounce
+// off the board edges, but should pass straight through other pieces
+// rather than getting physically wedged in place on a crowded board.
+const WALL_CATEGORY = 0x0002
+const SPECIAL_CATEGORY = 0x0004
 
 type TilePlugin = {
   tileId: string
@@ -50,8 +62,8 @@ type TilePlugin = {
   settleTimer: number
   isPreview?: boolean
   explodeCooldown?: number
-  // Eevee-only: when it landed, and how many times it's already hopped —
-  // the longer it sits uncaught, the more it tries to flee upward.
+  // Eevee/Mew only: when it landed, and how many times it's already
+  // hopped — the longer it sits uncaught, the more it tries to flee upward.
   bornAt?: number
   hopCount?: number
 }
@@ -98,6 +110,9 @@ type ExplosionEffect = {
   y: number
   t: number
   duration: number
+  // Mew's catch blast reuses this same effect, just scaled way up so it
+  // reads as a screen-filling event rather than a local explosion.
+  big?: boolean
 }
 
 type Particle = {
@@ -139,6 +154,8 @@ export interface GameCallbacks {
   onEeveeCaughtChange: (count: number) => void
   onEeveeLevelAnnounced: () => void
   onEeveeCaught: (name: string, value: number) => void
+  onMewLevelAnnounced: () => void
+  onMewCaught: () => void
 }
 
 function rand(min: number, max: number) {
@@ -314,6 +331,7 @@ export class PokemonMergeGame {
       isStatic: true,
       friction: 0.4,
       render: { fillStyle: '#334155' },
+      collisionFilter: { category: WALL_CATEGORY },
     }
     const t = this.wallThickness
     const floor = Matter.Bodies.rectangle(this.width / 2, this.height + t / 2, this.width + t * 2, t, wallOptions)
@@ -337,8 +355,8 @@ export class PokemonMergeGame {
       this.updateCelebration()
       this.updateTidalWave()
       this.updateExplosions()
-      this.updateEeveeSparkles()
-      this.updateEeveeEscape()
+      this.updateSpecialSparkles()
+      this.updateSpecialEscape()
       this.updateDangerState()
       this.checkGameOver()
     })
@@ -367,9 +385,10 @@ export class PokemonMergeGame {
   // you cleared a while ago fade into the background rather than cluttering
   // it at full size forever.
   private familySizeMultiplier(familyId: string): number {
-    // Eevee isn't part of the level rotation, so it has no "distance back"
-    // to measure — always render it at full size since it's a rare find.
-    if (familyId === EEVEE_FAMILY_ID) return 1
+    // Eevee/Mew aren't part of the level rotation, so they have no
+    // "distance back" to measure — always render at full size since
+    // they're rare finds.
+    if (familyId === EEVEE_FAMILY_ID || familyId === MEW_FAMILY_ID) return 1
     const order = getLevelOrder()
     const currentIdx = this.levelIndex % order.length
     const familyIdx = order.findIndex((f) => f.id === familyId)
@@ -465,10 +484,15 @@ export class PokemonMergeGame {
     this.dropFamilyId = this.weightedPoolFamilyId()
     this.dropTier = this.rollDropTier(this.dropFamilyId)
     // A wild Eevee (one of its 9 forms, picked fresh each visit) is queued
-    // up as the second drop, guaranteed, every 3rd level — so catching one
-    // with Poke Ball is a reliable but not overly frequent beat.
-    const isEeveeLevel = (this.levelIndex + 1) % 3 === 0
-    if (isEeveeLevel) {
+    // up as the second drop, guaranteed, every 3rd level. Every 5th level,
+    // Mew shows up instead — on the rare level that's a multiple of both,
+    // Mew wins since it's the bigger event.
+    const isMewLevel = (this.levelIndex + 1) % MEW_LEVEL_INTERVAL === 0
+    const isEeveeLevel = !isMewLevel && (this.levelIndex + 1) % EEVEE_LEVEL_INTERVAL === 0
+    if (isMewLevel) {
+      this.nextDropFamilyId = MEW_FAMILY_ID
+      this.nextDropTier = 0
+    } else if (isEeveeLevel) {
       this.nextDropFamilyId = EEVEE_FAMILY_ID
       this.nextDropTier = randomEeveelutionTier()
     } else {
@@ -484,13 +508,14 @@ export class PokemonMergeGame {
     this.callbacks.onArmedPowerChange(null)
     this.callbacks.onDangerChange(false)
     this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
-    if (isEeveeLevel) this.callbacks.onEeveeLevelAnnounced()
+    if (isMewLevel) this.callbacks.onMewLevelAnnounced()
+    else if (isEeveeLevel) this.callbacks.onEeveeLevelAnnounced()
   }
 
   private markDiscovered(familyId: string, tier: number) {
-    // Eevee isn't part of the discovered-species dex (it's not in FAMILIES),
-    // so it doesn't belong in that count.
-    if (familyId === EEVEE_FAMILY_ID) return
+    // Eevee/Mew aren't part of the discovered-species dex (they're not in
+    // FAMILIES), so they don't belong in that count.
+    if (familyId === EEVEE_FAMILY_ID || familyId === MEW_FAMILY_ID) return
     const key = `${familyId}-${tier}`
     if (this.discovered.has(key)) return
     this.discovered.add(key)
@@ -770,14 +795,21 @@ export class PokemonMergeGame {
         },
       },
     })
+    const isSpecial = tile.familyId === EEVEE_FAMILY_ID || tile.familyId === MEW_FAMILY_ID
     withPlugin(body, {
       tileId: tile.id,
       familyId: tile.familyId,
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
-      ...(tile.familyId === EEVEE_FAMILY_ID ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
+      ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
     })
+    if (isSpecial) {
+      // Only collides with the walls/floor, not with other pieces — so it
+      // can hop and slip through a crowded board instead of getting
+      // physically wedged in place.
+      body.collisionFilter = { category: SPECIAL_CATEGORY, mask: WALL_CATEGORY, group: 0 }
+    }
     Matter.Composite.add(this.engine.world, body)
     this.markDiscovered(tile.familyId, tile.tier)
 
@@ -907,29 +939,34 @@ export class PokemonMergeGame {
   private drawExplosions() {
     if (this.explosions.length === 0) return
     const ctx = this.render.context
+    const boardSpan = Math.hypot(this.width, this.height)
     for (const e of this.explosions) {
       const progress = e.t / e.duration
       ctx.save()
 
-      const flashAlpha = Math.max(0, 1 - progress * 3)
+      const flashMaxRadius = e.big ? boardSpan * 0.85 : 90 * this.scale
+      const flashAlpha = Math.max(0, 1 - progress * (e.big ? 1.6 : 3))
       if (flashAlpha > 0) {
-        const flashRadius = 90 * this.scale
-        const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, flashRadius)
-        grad.addColorStop(0, withAlpha('#fff7ed', flashAlpha))
-        grad.addColorStop(1, withAlpha('#fff7ed', 0))
+        const flashColor = e.big ? '#fdf4ff' : '#fff7ed'
+        const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, flashMaxRadius)
+        grad.addColorStop(0, withAlpha(flashColor, flashAlpha))
+        grad.addColorStop(1, withAlpha(flashColor, 0))
         ctx.fillStyle = grad
         ctx.beginPath()
-        ctx.arc(e.x, e.y, flashRadius, 0, Math.PI * 2)
+        ctx.arc(e.x, e.y, flashMaxRadius, 0, Math.PI * 2)
         ctx.fill()
       }
 
-      for (let i = 0; i < 2; i++) {
-        const ringProgress = Math.min(1, progress + i * 0.18)
+      const ringCount = e.big ? 3 : 2
+      const ringSpan = e.big ? boardSpan * 0.95 : 150 * this.scale
+      const ringColors = e.big ? ['#f472b6', '#e879f9', '#f8fafc'] : ['#fb923c', '#f8fafc']
+      for (let i = 0; i < ringCount; i++) {
+        const ringProgress = Math.min(1, progress + i * 0.16)
         if (ringProgress >= 1) continue
-        const ringRadius = (20 + ringProgress * 150) * this.scale
+        const ringRadius = (e.big ? 30 : 20) * this.scale + ringProgress * ringSpan
         ctx.globalAlpha = (1 - ringProgress) * 0.85
-        ctx.strokeStyle = i === 0 ? '#fb923c' : '#f8fafc'
-        ctx.lineWidth = (i === 0 ? 6 : 3) * this.scale
+        ctx.strokeStyle = ringColors[i]
+        ctx.lineWidth = (i === 0 ? (e.big ? 10 : 6) : e.big ? 5 : 3) * this.scale
         ctx.beginPath()
         ctx.arc(e.x, e.y, ringRadius, 0, Math.PI * 2)
         ctx.stroke()
@@ -956,6 +993,31 @@ export class PokemonMergeGame {
         color: roll > 0.66 ? '#f97316' : roll > 0.33 ? '#78716c' : '#fef08a',
         kind: Math.random() > 0.4 ? 'dust' : 'spark',
         angle: 0,
+      })
+    }
+  }
+
+  // Mew's board-clearing catch — a much bigger, psychic pink/purple/white
+  // burst than the regular capstone explosion, since it's meant to read as
+  // a screen-filling event rather than a local one.
+  private spawnMewBlastParticles(x: number, y: number) {
+    const s = this.scale
+    const palette = ['#f472b6', '#e879f9', '#c4b5fd', '#f8fafc']
+    for (let i = 0; i < 55; i++) {
+      const angle = rand(0, Math.PI * 2)
+      const speed = rand(6, 16) * s
+      this.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - rand(0, 2) * s,
+        gravity: 0.08,
+        life: rand(600, 1100),
+        maxLife: 1100,
+        size: rand(2.5, 5) * s,
+        color: palette[i % palette.length],
+        kind: Math.random() > 0.35 ? 'twinkle' : 'dust',
+        angle: rand(0, Math.PI * 2),
       })
     }
   }
@@ -1145,14 +1207,17 @@ export class PokemonMergeGame {
     })
   }
 
-  // A faint twinkle around any Eevee-line piece currently on the board, so
-  // it visually announces itself rather than blending in as just another
-  // drop.
-  private updateEeveeSparkles() {
+  private isSpecialFamily(familyId: string): boolean {
+    return familyId === EEVEE_FAMILY_ID || familyId === MEW_FAMILY_ID
+  }
+
+  // A faint twinkle around any Eevee or Mew currently on the board, so it
+  // visually announces itself rather than blending in as just another drop.
+  private updateSpecialSparkles() {
     if (this.frozen) return
     for (const body of this.dynamicBodies()) {
       const plugin = pluginOf(body)
-      if (!plugin || plugin.familyId !== EEVEE_FAMILY_ID) continue
+      if (!plugin || !this.isSpecialFamily(plugin.familyId)) continue
       if (Math.random() > 0.12) continue
       const angle = rand(0, Math.PI * 2)
       const dist = rand(0.3, 0.9) * (body.circleRadius ?? 20)
@@ -1172,21 +1237,20 @@ export class PokemonMergeGame {
     }
   }
 
-  // The longer a wild Eevee sits uncaught, the more it tries to hop away —
-  // a few times, then it settles for good, so it stays winnable.
-  private updateEeveeEscape() {
+  // The longer a wild Eevee or Mew sits uncaught, the more it tries to hop
+  // away — it keeps at it indefinitely, so leaving it too long stays risky.
+  private updateSpecialEscape() {
     if (this.frozen) return
     const now = this.engine.timing.timestamp
     for (const body of this.dynamicBodies()) {
       const plugin = pluginOf(body)
-      if (!plugin || plugin.familyId !== EEVEE_FAMILY_ID || plugin.bornAt === undefined) continue
+      if (!plugin || !this.isSpecialFamily(plugin.familyId) || plugin.bornAt === undefined) continue
       const hopCount = plugin.hopCount ?? 0
-      if (hopCount >= EEVEE_MAX_HOPS) continue
-      const dueHops = Math.floor((now - plugin.bornAt) / EEVEE_HOP_INTERVAL_MS)
+      const dueHops = Math.floor((now - plugin.bornAt) / SPECIAL_HOP_INTERVAL_MS)
       if (dueHops <= hopCount) continue
       plugin.hopCount = hopCount + 1
-      Matter.Body.setVelocity(body, { x: rand(-3, 3) * this.scale, y: -rand(5, 8) * this.scale })
-      this.spawnMergeEffect(EEVEE_FAMILY_ID, body.position.x, body.position.y)
+      Matter.Body.setVelocity(body, { x: rand(-5, 5) * this.scale, y: -rand(7, 11) * this.scale })
+      this.spawnMergeEffect(plugin.familyId, body.position.x, body.position.y)
     }
   }
 
@@ -1282,6 +1346,29 @@ export class PokemonMergeGame {
         angle: 0,
       })
     }
+  }
+
+  // Mew's catch isn't banked — it fires immediately: every piece on the
+  // board except the current level's target family gets swept away in one
+  // big blast, clearing clutter down to just what you actually need for
+  // the goal.
+  private catchMew(x: number, y: number) {
+    const currentFamilyId = this.currentFamily().id
+    const casualties = this.dynamicBodies().filter((body) => {
+      const plugin = pluginOf(body)!
+      return plugin.familyId !== currentFamilyId
+    })
+    for (const body of casualties) {
+      const plugin = pluginOf(body)!
+      const tile = getTile(plugin.familyId, plugin.tier)
+      this.score += Math.max(1, Math.round(tile.scoreValue / 2))
+      Matter.Composite.remove(this.engine.world, body)
+    }
+    if (casualties.length > 0) this.callbacks.onScoreChange(this.score)
+
+    this.explosions.push({ x, y, t: 0, duration: MEW_BLAST_MS, big: true })
+    this.spawnMewBlastParticles(x, y)
+    this.callbacks.onMewCaught()
   }
 
   // Spends one banked Eevee to open the same choose-a-power modal a
@@ -1396,6 +1483,8 @@ export class PokemonMergeGame {
           this.spawnPokeballEffect(throwObj.endX, throwObj.endY)
           if (plugin?.familyId === EEVEE_FAMILY_ID) {
             this.catchEevee(plugin.tier, throwObj.endX, throwObj.endY)
+          } else if (plugin?.familyId === MEW_FAMILY_ID) {
+            this.catchMew(throwObj.endX, throwObj.endY)
           } else {
             this.spawnCaptureFlash(throwObj.endX, throwObj.endY)
           }
