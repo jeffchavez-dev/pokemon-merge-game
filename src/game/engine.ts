@@ -1,21 +1,28 @@
 import Matter from 'matter-js'
 import {
   FAMILIES,
+  TYPE_IDS,
   getTile,
   getFamily,
-  getLevelFamily,
+  getLevelType,
   getLevelOrder,
   reshuffleLevelOrder,
   setLevelOrder,
   typeOf,
+  currentLine,
+  advanceCursor,
+  isTypeComplete,
+  getCursors,
+  setCursors,
+  findFusionRecipe,
+  finalTier,
   randomEeveelutionTier,
   eeveeTradeValue,
   EEVEE_FAMILY_ID,
   MEW_FAMILY_ID,
-  familyGoalTier,
-  familyMaxTier,
   type Tile,
   type Family,
+  type FusionRecipe,
 } from '../data/families'
 import { POWERS, getPower, type PowerId } from '../data/powers'
 
@@ -30,7 +37,6 @@ const GAME_OVER_GRACE_MS = 1200
 const DROP_COOLDOWN_MS = 450
 const RESTING_SPEED = 0.15
 const CELEBRATION_MS = 1500
-const LEVEL_TRANSITION_MS = 1700
 const CYCLE_BANNER_MS = 2200
 const THUNDER_MAX_TARGETS = 3
 const EXPLOSION_MS = 650
@@ -66,8 +72,12 @@ const SPECIAL_CATEGORY = 0x0004
 // (an explicit choice) actually clears it. Bumped SAVE_VERSION invalidates
 // any old save whose shape no longer matches, rather than crashing on it.
 const SAVE_KEY = 'pokemon-merge-save'
-const SAVE_VERSION = 1
+const SAVE_VERSION = 2
 const AUTOSAVE_INTERVAL_MS = 2000
+// The pause between "line discovered, choose a power" and the level actually
+// advancing, when the completed line is also this level's own type — gives
+// the power choice a beat to land before the board resets for the next type.
+const LINE_TO_LEVEL_TRANSITION_MS = 400
 
 type SavedBody = {
   familyId: string
@@ -81,6 +91,7 @@ type SavedGame = {
   levelIndex: number
   score: number
   levelOrderIds: string[]
+  cursors: Record<string, number>
   discovered: string[]
   powerCharges: Record<PowerId, number>
   bonusUnlockedPowerIds: PowerId[]
@@ -104,9 +115,6 @@ type TilePlugin = {
   // hopped — the longer it sits uncaught, the more it tries to flee upward.
   bornAt?: number
   hopCount?: number
-  // A "charged" tile (see buildFamily2) — drawn with a pulsing halo since
-  // it reuses an earlier stage's sprite rather than a new one.
-  glow?: boolean
 }
 
 type ParticleKind = 'spark' | 'ember' | 'drop' | 'ring' | 'leaf' | 'dust' | 'flash' | 'twinkle'
@@ -192,6 +200,7 @@ export interface GameCallbacks {
   onDiscovered: (familyId: string, tier: number) => void
   onActivePowersChange: (ids: PowerId[]) => void
   onCapstoneFormed: (familyId: string) => void
+  onFusionFormed: (boostedType: string, speciesName: string) => void
   onEeveeCaughtChange: (count: number) => void
   onEeveeLevelAnnounced: () => void
   onEeveeCaught: (name: string, value: number) => void
@@ -290,6 +299,7 @@ export class PokemonMergeGame {
   private previewBody: Matter.Body | null = null
   private pendingMerges: Array<[Matter.Body, Matter.Body]> = []
   private pendingExplosions: Array<[Matter.Body, Matter.Body]> = []
+  private pendingFusions: Array<[Matter.Body, Matter.Body, FusionRecipe]> = []
   private particles: Particle[] = []
   private pokeballThrows: PokeballThrow[] = []
   private lightningStrikes: LightningStrike[] = []
@@ -315,6 +325,10 @@ export class PokemonMergeGame {
   private canDrop = true
   private gameOver = false
   private frozen = false
+  // Set when a just-completed line belongs to the type this level is
+  // actually testing — once the resulting power choice is made, the level
+  // (not just the line) advances too.
+  private pendingLevelAdvance = false
   private dropFamilyId = FAMILIES[0].id
   private dropTier = 0
   private nextDropFamilyId = FAMILIES[0].id
@@ -366,7 +380,8 @@ export class PokemonMergeGame {
         version: SAVE_VERSION,
         levelIndex: this.levelIndex,
         score: this.score,
-        levelOrderIds: getLevelOrder().map((f) => f.id),
+        levelOrderIds: getLevelOrder(),
+        cursors: getCursors(),
         discovered: Array.from(this.discovered),
         powerCharges: this.powerCharges,
         bonusUnlockedPowerIds: Array.from(this.bonusUnlockedPowers),
@@ -415,6 +430,7 @@ export class PokemonMergeGame {
       this.startLevel(0, false, true)
       return
     }
+    setCursors(saved.cursors ?? {})
     this.levelIndex = saved.levelIndex
     this.score = saved.score
     this.discovered = new Set(saved.discovered)
@@ -452,7 +468,6 @@ export class PokemonMergeGame {
         tier: tile.tier,
         merging: false,
         settleTimer: 0,
-        glow: tile.glow,
         ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
       })
       if (isSpecial) {
@@ -516,6 +531,7 @@ export class PokemonMergeGame {
 
     Matter.Events.on(this.engine, 'afterUpdate', () => {
       this.processPendingExplosions()
+      this.processPendingFusions()
       this.processPendingMerges()
       this.updateExplodeCooldowns()
       this.updateParticles()
@@ -532,7 +548,6 @@ export class PokemonMergeGame {
 
     Matter.Events.on(this.render, 'afterRender', () => {
       this.drawGameOverLine()
-      this.drawGlowHalos()
       this.drawParticles()
       this.drawPokeballThrows()
       this.drawLightningStrikes()
@@ -545,15 +560,16 @@ export class PokemonMergeGame {
     Matter.Runner.run(this.runner, this.engine)
   }
 
+  // The line currently active for whichever type this level is testing.
   private currentFamily() {
-    return getLevelFamily(this.levelIndex)
+    return currentLine(getLevelType(this.levelIndex))
   }
 
-  // Families shrink the further back they are from whichever family is
-  // the CURRENT level's goal (wrapping around the roster), so the active
-  // challenge always reads as the biggest thing on the board and families
-  // you cleared a while ago fade into the background rather than cluttering
-  // it at full size forever.
+  // Types shrink the further back they are from whichever type is the
+  // CURRENT level's target (wrapping around the 18-type rotation), so the
+  // active challenge always reads as the biggest thing on the board and
+  // types you cleared a while ago fade into the background rather than
+  // cluttering it at full size forever.
   private familySizeMultiplier(familyId: string): number {
     // Eevee/Mew aren't part of the level rotation, so they have no
     // "distance back" to measure — always render at full size since
@@ -561,8 +577,8 @@ export class PokemonMergeGame {
     if (familyId === EEVEE_FAMILY_ID || familyId === MEW_FAMILY_ID) return 1
     const order = getLevelOrder()
     const currentIdx = this.levelIndex % order.length
-    const familyIdx = order.findIndex((f) => f.id === familyId)
-    const distanceBack = (currentIdx - familyIdx + order.length) % order.length
+    const typeIdx = order.indexOf(typeOf(familyId))
+    const distanceBack = (currentIdx - typeIdx + order.length) % order.length
     const shrinkPerStep = 0.05
     const minMultiplier = 0.55
     return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
@@ -576,20 +592,23 @@ export class PokemonMergeGame {
     return (this.radius(tile) * 2) / tile.spriteSize
   }
 
-  // The families a player can drop during this level: the current goal
-  // family plus the ACTIVE_POOL_SIZE - 1 families closest to it (by modular
-  // distance in the level order, same measure familySizeMultiplier uses),
-  // capped to whatever's actually been unlocked so far on a fresh run.
-  // Sorted closest-first, so index 0 is always the current level's family.
+  // The types a player can drop during this level: the current goal type
+  // plus the ACTIVE_POOL_SIZE - 1 types closest to it (by modular distance
+  // in the level order, same measure familySizeMultiplier uses), capped to
+  // whatever's actually been unlocked so far on a fresh run. Each pooled
+  // type contributes whichever line is currently active for it — so a
+  // type's stray leftover pieces from an earlier line stay meaningful
+  // (same type + same tier still merges), even once its cursor has moved
+  // on. Sorted closest-first, so index 0 is always the current level's line.
   private activePool(): Family[] {
     const order = getLevelOrder()
     const currentIdx = this.levelIndex % order.length
     const poolSize = Math.min(ACTIVE_POOL_SIZE, this.levelIndex + 1, order.length)
     return order
-      .map((f, i) => ({ f, distanceBack: (currentIdx - i + order.length) % order.length }))
+      .map((type, i) => ({ type, distanceBack: (currentIdx - i + order.length) % order.length }))
       .sort((a, b) => a.distanceBack - b.distanceBack)
       .slice(0, poolSize)
-      .map((x) => x.f)
+      .map((x) => currentLine(x.type))
   }
 
   // Weighted so the current level's family (and other recently-seen ones)
@@ -712,45 +731,6 @@ export class PokemonMergeGame {
     ctx.lineTo(this.width, this.gameOverLineY)
     ctx.stroke()
     ctx.restore()
-  }
-
-  // A "charged" tile (buildFamily2) reuses an earlier stage's sprite, so it
-  // needs some other signal that it's progress — a pulsing golden halo plus
-  // a slowly-rotating dashed ring, drawn with additive blending so it reads
-  // as a glow around the sprite rather than a wash over it.
-  private drawGlowHalos() {
-    const now = this.engine.timing.timestamp
-    const pulse = 0.5 + 0.5 * Math.sin(now / 220)
-    const ctx = this.render.context
-    for (const body of this.engine.world.bodies) {
-      const plugin = pluginOf(body)
-      if (!plugin || !plugin.glow) continue
-      const r = body.circleRadius ?? 30
-      const haloRadius = r * (1.25 + 0.15 * pulse)
-
-      ctx.save()
-      ctx.globalCompositeOperation = 'lighter'
-
-      const grad = ctx.createRadialGradient(body.position.x, body.position.y, r * 0.6, body.position.x, body.position.y, haloRadius)
-      grad.addColorStop(0, withAlpha('#fde047', 0))
-      grad.addColorStop(0.75, withAlpha('#fde047', 0.5 + 0.2 * pulse))
-      grad.addColorStop(1, withAlpha('#fde047', 0))
-      ctx.fillStyle = grad
-      ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, haloRadius, 0, Math.PI * 2)
-      ctx.fill()
-
-      ctx.globalAlpha = 0.6 + 0.3 * pulse
-      ctx.strokeStyle = '#fef9c3'
-      ctx.lineWidth = 2 * this.scale
-      ctx.setLineDash([r * 0.35, r * 0.25])
-      ctx.lineDashOffset = -(now / 12) % (r * 2)
-      ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, r * 1.08, 0, Math.PI * 2)
-      ctx.stroke()
-
-      ctx.restore()
-    }
   }
 
   private drawParticles() {
@@ -978,7 +958,6 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
-      glow: tile.glow,
       isPreview: true,
     })
     this.previewBody = body
@@ -1021,7 +1000,6 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
-      glow: tile.glow,
       ...(isSpecial ? { bornAt: this.engine.timing.timestamp, hopCount: 0 } : {}),
     })
     if (isSpecial) {
@@ -1046,40 +1024,46 @@ export class PokemonMergeGame {
     }, DROP_COOLDOWN_MS)
   }
 
+  // A piece that's both at its own line's final tier AND whose type has no
+  // further lines left — nothing more it can become on its own. These are
+  // Fusion Ladder fuel (or, failing a recipe, capstone-blast fodder) rather
+  // than normal merge candidates.
+  private isCappedComplete(plugin: TilePlugin): boolean {
+    return plugin.tier >= finalTier(getFamily(plugin.familyId)) && isTypeComplete(typeOf(plugin.familyId))
+  }
+
   private handleCollision(a: Matter.Body, b: Matter.Body) {
     if (this.frozen) return
     const pa = pluginOf(a)
     const pb = pluginOf(b)
     if (!pa || !pb || pa.isPreview || pb.isPreview) return
 
-    // Two capstones can't merge into anything further — instead, any pair of
-    // them slamming together (same family or not) sets off a blast that
-    // crushes weaker pieces nearby, so it's still a dramatic moment rather
-    // than a dead end. Each side's own family decides what tier its capstone
-    // sits at (families with a shorter chain, like a 2-stage test line, cap
-    // out earlier than the usual tier 3).
-    const paMax = familyMaxTier(getFamily(pa.familyId))
-    const pbMax = familyMaxTier(getFamily(pb.familyId))
-    if (pa.tier >= paMax && pb.tier >= pbMax) {
+    if (this.isCappedComplete(pa) && this.isCappedComplete(pb)) {
       if ((pa.explodeCooldown ?? 0) > 0 || (pb.explodeCooldown ?? 0) > 0) return
+      const typeA = typeOf(pa.familyId)
+      const typeB = typeOf(pb.familyId)
+      if (typeA !== typeB) {
+        const recipe = findFusionRecipe(typeA, typeB)
+        if (recipe) {
+          this.pendingFusions.push([a, b, recipe])
+          return
+        }
+      }
+      // Nothing left to gain from merging (same type with no lines left, or
+      // different types with no Fusion Ladder recipe together) — the old
+      // "capstone collision" blast: crushes weaker nearby pieces for a
+      // partial payout instead of just bouncing off each other.
       this.pendingExplosions.push([a, b])
       return
     }
 
     if (pa.merging || pb.merging) return
     if (pa.tier !== pb.tier) return
-    if (pa.tier >= paMax) return
-
-    const sameFamily = pa.familyId === pb.familyId
-    // Two different families' final evolutions (e.g. Raichu and Luxray —
-    // different chains, both "electric") can also fuse into that type's
-    // capstone, not just two of the exact same species. Each side must be
-    // at its OWN family's goal tier, not just numerically equal — a 2-stage
-    // family's capstone tier can coincide with a 3-stage family's goal tier.
-    const paGoal = familyGoalTier(getFamily(pa.familyId))
-    const pbGoal = familyGoalTier(getFamily(pb.familyId))
-    const sameTypeFinal = pa.tier === paGoal && pb.tier === pbGoal && typeOf(pa.familyId) === typeOf(pb.familyId)
-    if (!sameFamily && !sameTypeFinal) return
+    // Same type + same tier merges regardless of which specific line either
+    // piece came from — a stray Charmeleon and a stray Braixen (both Fire,
+    // both tier 1) can merge together, so no piece is ever stranded just
+    // because its own exact line isn't dropping anymore.
+    if (typeOf(pa.familyId) !== typeOf(pb.familyId)) return
 
     pa.merging = true
     pb.merging = true
@@ -1104,6 +1088,56 @@ export class PokemonMergeGame {
       if (!this.engine.world.bodies.includes(a) || !this.engine.world.bodies.includes(b)) continue
       this.applyCapstoneExplosion(a, b)
     }
+  }
+
+  private processPendingFusions() {
+    if (this.pendingFusions.length === 0 || this.frozen) return
+    const fusions = this.pendingFusions
+    this.pendingFusions = []
+    for (const [a, b, recipe] of fusions) {
+      if (!this.engine.world.bodies.includes(a) || !this.engine.world.bodies.includes(b)) continue
+      this.applyFusion(a, b, recipe)
+      return
+    }
+  }
+
+  // Two different, fully Type Complete pieces whose types share a Fusion
+  // Ladder recipe: both are consumed and the recipe's target type jumps
+  // ahead by one line — so a maxed-out type's pieces stay useful forever
+  // instead of just sitting there once there's nothing left to merge.
+  private applyFusion(a: Matter.Body, b: Matter.Body, recipe: FusionRecipe) {
+    const midX = (a.position.x + b.position.x) / 2
+    const midY = (a.position.y + b.position.y) / 2
+    Matter.Composite.remove(this.engine.world, [a, b])
+
+    const boostType = recipe.boosts
+    if (!isTypeComplete(boostType)) advanceCursor(boostType)
+    const tile = getTile(currentLine(boostType).id, 0)
+
+    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
+      restitution: 0.15,
+      friction: 0.2,
+      frictionAir: 0.0015,
+      density: 0.0015,
+      render: {
+        sprite: {
+          texture: tile.sprite,
+          xScale: this.spriteScale(tile),
+          yScale: this.spriteScale(tile),
+        },
+      },
+    })
+    withPlugin(newBody, { tileId: tile.id, familyId: tile.familyId, tier: tile.tier, merging: false, settleTimer: 0 })
+    Matter.Body.setVelocity(newBody, { x: 0, y: -2 * this.scale })
+    Matter.Composite.add(this.engine.world, newBody)
+    this.markDiscovered(tile.familyId, tile.tier)
+
+    // Fusing is a deliberate, harder-to-set-up moment than a normal merge —
+    // worth double the tile's usual score.
+    this.score += tile.scoreValue * 2
+    this.callbacks.onScoreChange(this.score)
+    this.spawnCelebrationEffect(tile.familyId, midX, midY)
+    this.callbacks.onFusionFormed(boostType, tile.name)
   }
 
   // Two capstones collided: they survive (there's no further tier to merge
@@ -1257,17 +1291,32 @@ export class PokemonMergeGame {
   // completed the current level (caller should stop).
   private applyMerge(a: Matter.Body, b: Matter.Body): boolean {
     const pa = pluginOf(a)!
-    const pb = pluginOf(b)!
     const midX = (a.position.x + b.position.x) / 2
     const midY = (a.position.y + b.position.y) / 2
     Matter.Composite.remove(this.engine.world, [a, b])
 
-    const sameFamily = pa.familyId === pb.familyId
-    const resultFamilyId = sameFamily ? pa.familyId : typeOf(pa.familyId)
-    const newTier = sameFamily ? pa.tier + 1 : familyMaxTier(getFamily(resultFamilyId))
-    this.spawnMergeEffect(resultFamilyId, midX, midY)
+    const type = typeOf(pa.familyId)
+    const active = currentLine(type)
+    const activeFinal = finalTier(active)
+    const wasTypeComplete = isTypeComplete(type)
+    const completedLineId = active.id
 
-    const tile = getTile(resultFamilyId, newTier)
+    let tile: Tile
+    let justCompletedLine = false
+    if (pa.tier >= activeFinal) {
+      // Both inputs are already at (or past) the active line's own final
+      // real stage — there's no further tier of THIS line to reach, so the
+      // merge hands off directly into the next line's first stage instead
+      // of repeating an invented "capstone" tile.
+      justCompletedLine = !wasTypeComplete
+      if (!wasTypeComplete) advanceCursor(type)
+      const next = currentLine(type)
+      tile = wasTypeComplete ? getTile(next.id, finalTier(next)) : getTile(next.id, 0)
+    } else {
+      tile = getTile(active.id, pa.tier + 1)
+    }
+
+    this.spawnMergeEffect(tile.familyId, midX, midY)
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
       restitution: 0.15,
       friction: 0.2,
@@ -1287,7 +1336,6 @@ export class PokemonMergeGame {
       tier: tile.tier,
       merging: false,
       settleTimer: 0,
-      glow: tile.glow,
     })
     Matter.Body.setVelocity(newBody, { x: 0, y: -1.5 * this.scale })
     Matter.Composite.add(this.engine.world, newBody)
@@ -1296,29 +1344,34 @@ export class PokemonMergeGame {
     this.score += tile.scoreValue
     this.callbacks.onScoreChange(this.score)
 
-    const resultFamily = getFamily(tile.familyId)
-    if (newTier === familyGoalTier(resultFamily) && tile.familyId === this.currentFamily().id) {
-      this.beginCelebration(tile.familyId, midX, midY)
-      return true
-    }
-    if (newTier === familyMaxTier(resultFamily)) {
-      this.beginCapstoneBonus(tile.familyId, midX, midY)
+    if (justCompletedLine) {
+      const isCurrentLevelType = type === getLevelType(this.levelIndex)
+      this.beginLineComplete(completedLineId, midX, midY, isCurrentLevelType)
       return true
     }
     return false
   }
 
-  // A capstone ("new discovery") forming is a bonus moment independent of
-  // level progress — freeze the board and let the player pick a power to
-  // unlock early (or a bonus charge if they already have every power).
-  private beginCapstoneBonus(familyId: string, x: number, y: number) {
+  // A line finishing — some type's active species reaching its own final
+  // real stage a second time — always offers a bonus power choice, the same
+  // as reaching a capstone used to. If it's also the type this level is
+  // actually testing, the level itself advances once that choice is made,
+  // rather than resuming play immediately.
+  private beginLineComplete(completedLineId: string, x: number, y: number, isCurrentLevelType: boolean) {
     this.frozen = true
-    this.spawnCelebrationEffect(familyId, x, y)
-    this.callbacks.onCapstoneFormed(familyId)
+    this.pendingLevelAdvance = isCurrentLevelType
+    this.celebration = { x, y, t: 0, duration: CELEBRATION_MS, familyId: completedLineId }
+    this.spawnCelebrationEffect(completedLineId, x, y)
+    setTimeout(() => {
+      this.celebration = null
+    }, CELEBRATION_MS)
+    this.callbacks.onCapstoneFormed(completedLineId)
   }
 
-  // Resolves a capstone bonus choice: unlocks the power if it isn't active
-  // yet, otherwise grants a bonus charge for the rest of this level.
+  // Resolves a line-complete bonus choice: unlocks the power if it isn't
+  // active yet, otherwise grants a bonus charge for the rest of this level.
+  // If the completed line was this level's own type, the level itself
+  // advances next; otherwise play just resumes.
   choosePower(id: PowerId) {
     if (!this.activePowers().some((p) => p.id === id)) {
       this.bonusUnlockedPowers.add(id)
@@ -1327,31 +1380,28 @@ export class PokemonMergeGame {
       this.powerCharges[id] = (this.powerCharges[id] ?? 0) + 1
       this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     }
-    this.frozen = false
+    if (this.pendingLevelAdvance) {
+      this.pendingLevelAdvance = false
+      this.runLevelTransition()
+    } else {
+      this.frozen = false
+    }
   }
 
-  // Goal reached: freeze the board and let the newly-formed Pokemon sit
-  // there with a celebratory burst before the "Level Complete" banner
-  // appears, so the player actually gets to see what they made.
-  private beginCelebration(familyId: string, x: number, y: number) {
-    this.frozen = true
-    this.celebration = { x, y, t: 0, duration: CELEBRATION_MS, familyId }
-    this.spawnCelebrationEffect(familyId, x, y)
-
+  // Advances the level rotation to the next type, matching the pacing a
+  // "goal reached" celebration used to have on its own.
+  private runLevelTransition() {
+    this.callbacks.onLevelComplete(this.levelIndex)
     setTimeout(() => {
-      this.celebration = null
-      this.callbacks.onLevelComplete(this.levelIndex)
-      setTimeout(() => {
-        const nextIndex = this.levelIndex + 1
-        const wrapsToNewCycle = nextIndex > 0 && nextIndex % FAMILIES.length === 0
-        if (wrapsToNewCycle) {
-          this.callbacks.onCycleComplete(nextIndex / FAMILIES.length)
-          setTimeout(() => this.startLevel(nextIndex, true, false), CYCLE_BANNER_MS)
-        } else {
-          this.startLevel(nextIndex, true, false)
-        }
-      }, LEVEL_TRANSITION_MS)
-    }, CELEBRATION_MS)
+      const nextIndex = this.levelIndex + 1
+      const wrapsToNewCycle = nextIndex > 0 && nextIndex % TYPE_IDS.length === 0
+      if (wrapsToNewCycle) {
+        this.callbacks.onCycleComplete(nextIndex / TYPE_IDS.length)
+        setTimeout(() => this.startLevel(nextIndex, true, false), CYCLE_BANNER_MS)
+      } else {
+        this.startLevel(nextIndex, true, false)
+      }
+    }, LINE_TO_LEVEL_TRANSITION_MS)
   }
 
   private updateCelebration() {
@@ -1930,8 +1980,10 @@ export class PokemonMergeGame {
     const groups = new Map<string, Matter.Body[]>()
     for (const body of bodies) {
       const plugin = pluginOf(body)!
-      if (plugin.tier >= familyMaxTier(getFamily(plugin.familyId))) continue
-      const key = `${plugin.familyId}-${plugin.tier}`
+      if (this.isCappedComplete(plugin)) continue
+      // Grouped by type + tier, not exact line — matches the same "same
+      // type, same tier" rule normal merges use now.
+      const key = `${typeOf(plugin.familyId)}-${plugin.tier}`
       const list = groups.get(key) ?? []
       list.push(body)
       groups.set(key, list)

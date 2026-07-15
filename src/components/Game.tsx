@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { PokemonMergeGame } from '../game/engine'
 import {
   FAMILIES,
+  TYPE_IDS,
   EEVEE_FAMILY_ID,
   getTile,
   getFamily,
   getLevelOrder,
-  familyGoalTier,
-  familyMaxTier,
+  currentLine,
+  finalTier,
 } from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
+import TypeCompendium from './TypeCompendium'
 
 const BEST_SCORE_KEY = 'pokemon-merge-best-score'
 
@@ -43,6 +45,7 @@ export default function Game() {
   const [inDanger, setInDanger] = useState(false)
   const [discovered, setDiscovered] = useState<Set<string>>(new Set())
   const [infoOpen, setInfoOpen] = useState(false)
+  const [compendiumOpen, setCompendiumOpen] = useState(false)
   const [activePowerIds, setActivePowerIds] = useState<PowerId[]>([POWERS[0].id])
   const [capstoneFamilyId, setCapstoneFamilyId] = useState<string | null>(null)
   const [eeveeCaught, setEeveeCaught] = useState(0)
@@ -50,6 +53,7 @@ export default function Game() {
   const [eeveeToast, setEeveeToast] = useState<string | null>(null)
   const [mewBanner, setMewBanner] = useState(false)
   const [mewToast, setMewToast] = useState<string | null>(null)
+  const [fusionToast, setFusionToast] = useState<string | null>(null)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -94,6 +98,10 @@ export default function Game() {
       onActivePowersChange: setActivePowerIds,
       onCapstoneFormed: (fam) => {
         setCapstoneFamilyId(fam)
+      },
+      onFusionFormed: (boostedType, speciesName) => {
+        setFusionToast(`Fusion! ${boostedType[0].toUpperCase()}${boostedType.slice(1)} surges ahead — ${speciesName}!`)
+        setTimeout(() => setFusionToast(null), 2400)
       },
       onEeveeCaughtChange: setEeveeCaught,
       onEeveeLevelAnnounced: () => {
@@ -157,7 +165,7 @@ export default function Game() {
   const nowTile = getTile(dropFamilyId, dropTier)
   const nextTile = getTile(nextFamilyId, nextTier)
   const goalFamily = getFamily(familyId)
-  const goalTile = getTile(familyId, familyGoalTier(goalFamily))
+  const goalTile = getTile(familyId, finalTier(goalFamily))
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
   return (
@@ -165,13 +173,23 @@ export default function Game() {
       <div className="mx-auto flex h-full w-full max-w-[480px] flex-1 flex-col gap-2 px-2 pt-2 pb-2">
         <div className="flex items-center justify-between px-1">
           <h1 className="text-base font-bold tracking-tight">Pokemon Merge</h1>
-          <button
-            onClick={() => setInfoOpen(true)}
-            aria-label="Info and progress"
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
-          >
-            ⓘ
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setCompendiumOpen(true)}
+              aria-label="Type Compendium"
+              title="Type Compendium"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+            >
+              📘
+            </button>
+            <button
+              onClick={() => setInfoOpen(true)}
+              aria-label="Info and progress"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+            >
+              ⓘ
+            </button>
+          </div>
         </div>
 
         <HeaderBar
@@ -236,6 +254,12 @@ export default function Game() {
             </div>
           )}
 
+          {fusionToast && (
+            <div className="pointer-events-none absolute top-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-emerald-300 bg-slate-950/90 px-4 py-1.5 text-sm font-semibold text-emerald-200 shadow-lg">
+              {fusionToast}
+            </div>
+          )}
+
           <div
             ref={containerRef}
             onPointerMove={handlePointerMove}
@@ -289,6 +313,8 @@ export default function Game() {
           onClose={() => setInfoOpen(false)}
         />
       )}
+
+      {compendiumOpen && <TypeCompendium onClose={() => setCompendiumOpen(false)} />}
 
       {capstoneFamilyId && (
         <CapstonePowerModal
@@ -344,7 +370,7 @@ function HeaderBar({
   eeveeCaught: number
   onExchangeEevee: () => void
 }) {
-  const displayLevel = (levelIndex % FAMILIES.length) + 1
+  const displayLevel = (levelIndex % TYPE_IDS.length) + 1
 
   return (
     <div
@@ -466,10 +492,10 @@ function InfoOverlay({
   discovered: Set<string>
   onClose: () => void
 }) {
-  const currentInCycle = levelIndex % FAMILIES.length
-  const cycleNumber = Math.floor(levelIndex / FAMILIES.length) + 1
+  const currentInCycle = levelIndex % TYPE_IDS.length
+  const cycleNumber = Math.floor(levelIndex / TYPE_IDS.length) + 1
   const totalDiscovered = discovered.size
-  const totalTiles = FAMILIES.length * 4
+  const totalTiles = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-950/97 backdrop-blur-sm" onClick={onClose}>
@@ -489,25 +515,27 @@ function InfoOverlay({
         </div>
 
         <div className="text-sm text-slate-400">
-          Cycle {cycleNumber} — Level {currentInCycle + 1} of {FAMILIES.length}
+          Cycle {cycleNumber} — Level {currentInCycle + 1} of {TYPE_IDS.length}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {getLevelOrder().map((f, i) => {
+          {getLevelOrder().map((type, i) => {
             const state = i < currentInCycle ? 'done' : i === currentInCycle ? 'current' : 'locked'
+            const line = currentLine(type)
+            const label = type.charAt(0).toUpperCase() + type.slice(1)
             return (
               <div
-                key={f.id}
+                key={type}
                 className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs transition-opacity ${
                   state === 'locked' ? 'border-slate-800 opacity-30' : 'border-slate-600 opacity-100'
                 }`}
-                style={{ backgroundColor: state !== 'locked' ? `${f.color}22` : undefined }}
+                style={{ backgroundColor: state !== 'locked' ? `${line.color}22` : undefined }}
               >
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: state !== 'locked' ? f.color : '#475569' }}
+                  style={{ backgroundColor: state !== 'locked' ? line.color : '#475569' }}
                 />
-                {state === 'locked' ? '???' : f.name}
+                {state === 'locked' ? '???' : label}
                 {state === 'done' && ' ✓'}
               </div>
             )
@@ -566,7 +594,7 @@ function CapstonePowerModal({
   onChoose: (id: PowerId) => void
 }) {
   const isEeveeTrade = familyId === EEVEE_FAMILY_ID
-  const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, familyMaxTier(getFamily(familyId)))
+  const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, finalTier(getFamily(familyId)))
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">
