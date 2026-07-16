@@ -26,6 +26,7 @@ function loadBestScore(): number {
 export default function Game() {
   const containerRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<PokemonMergeGame | null>(null)
+  const mergeToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [score, setScore] = useState(0)
   const [bestScore, setBestScore] = useState(loadBestScore)
@@ -47,13 +48,20 @@ export default function Game() {
   const [infoOpen, setInfoOpen] = useState(false)
   const [compendiumOpen, setCompendiumOpen] = useState(false)
   const [activePowerIds, setActivePowerIds] = useState<PowerId[]>([POWERS[0].id])
-  const [capstoneFamilyId, setCapstoneFamilyId] = useState<string | null>(null)
+  const [capstoneInfo, setCapstoneInfo] = useState<{ familyId: string; aName: string; bName: string } | null>(null)
+  const [mergeToast, setMergeToast] = useState<string | null>(null)
   const [eeveeCaught, setEeveeCaught] = useState(0)
   const [eeveeBanner, setEeveeBanner] = useState(false)
   const [eeveeToast, setEeveeToast] = useState<string | null>(null)
   const [mewBanner, setMewBanner] = useState(false)
   const [mewToast, setMewToast] = useState<string | null>(null)
   const [fusionToast, setFusionToast] = useState<string | null>(null)
+
+  const showMergeToast = (text: string, duration = 2200) => {
+    if (mergeToastTimeoutRef.current) clearTimeout(mergeToastTimeoutRef.current)
+    setMergeToast(text)
+    mergeToastTimeoutRef.current = setTimeout(() => setMergeToast(null), duration)
+  }
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -96,12 +104,22 @@ export default function Game() {
         setDiscovered((prev) => new Set(prev).add(`${fam}-${tier}`))
       },
       onActivePowersChange: setActivePowerIds,
-      onCapstoneFormed: (fam) => {
-        setCapstoneFamilyId(fam)
+      onCapstoneFormed: (fam, aName, bName) => {
+        setCapstoneInfo({ familyId: fam, aName, bName })
       },
       onFusionFormed: (boostedType, speciesName) => {
         setFusionToast(`Fusion! ${boostedType[0].toUpperCase()}${boostedType.slice(1)} surges ahead — ${speciesName}!`)
         setTimeout(() => setFusionToast(null), 2400)
+      },
+      onMergeFormed: ({ aName, bName, resultName, type, kind }) => {
+        const typeLabel = type.charAt(0).toUpperCase() + type.slice(1)
+        if (kind === 'handoff') {
+          showMergeToast(`${aName} + ${bName} → ${typeLabel} continues with ${resultName}!`)
+        } else if (kind === 'lineFinal') {
+          showMergeToast(`${resultName} formed — ${typeLabel}'s current final. Bump another maxed ${typeLabel} Pokemon to continue.`)
+        } else if (aName !== bName) {
+          showMergeToast(`${aName} + ${bName} → ${resultName} (both ${typeLabel})`)
+        }
       },
       onEeveeCaughtChange: setEeveeCaught,
       onEeveeLevelAnnounced: () => {
@@ -155,7 +173,7 @@ export default function Game() {
 
   const handleChoosePower = (id: PowerId) => {
     gameRef.current?.choosePower(id)
-    setCapstoneFamilyId(null)
+    setCapstoneInfo(null)
   }
 
   const handleExchangeEevee = () => {
@@ -260,6 +278,12 @@ export default function Game() {
             </div>
           )}
 
+          {mergeToast && (
+            <div className="pointer-events-none absolute bottom-3 left-1/2 z-40 -translate-x-1/2 rounded-full border border-slate-500 bg-slate-950/90 px-3 py-1.5 text-center text-xs font-medium text-slate-200 shadow-lg">
+              {mergeToast}
+            </div>
+          )}
+
           <div
             ref={containerRef}
             onPointerMove={handlePointerMove}
@@ -316,9 +340,11 @@ export default function Game() {
 
       {compendiumOpen && <TypeCompendium onClose={() => setCompendiumOpen(false)} />}
 
-      {capstoneFamilyId && (
+      {capstoneInfo && (
         <CapstonePowerModal
-          familyId={capstoneFamilyId}
+          familyId={capstoneInfo.familyId}
+          aName={capstoneInfo.aName}
+          bName={capstoneInfo.bName}
           activePowerIds={activePowerIds}
           charges={powerCharges}
           onChoose={handleChoosePower}
@@ -584,11 +610,15 @@ function InfoOverlay({
 
 function CapstonePowerModal({
   familyId,
+  aName,
+  bName,
   activePowerIds,
   charges,
   onChoose,
 }: {
   familyId: string
+  aName: string
+  bName: string
   activePowerIds: PowerId[]
   charges: Record<PowerId, number>
   onChoose: (id: PowerId) => void
@@ -603,6 +633,11 @@ function CapstonePowerModal({
         <div className="text-lg font-bold text-yellow-300">
           {isEeveeTrade ? 'Traded an Eevee!' : `${capstone.name} discovered!`}
         </div>
+        {!isEeveeTrade && (
+          <div className="text-xs text-slate-500">
+            {aName} + {bName} → hands the line off
+          </div>
+        )}
         <div className="text-sm text-slate-400">Choose a power to boost:</div>
       </div>
 
