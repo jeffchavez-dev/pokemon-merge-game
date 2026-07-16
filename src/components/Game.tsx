@@ -1,15 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PokemonMergeGame } from '../game/engine'
-import {
-  FAMILIES,
-  TYPE_IDS,
-  EEVEE_FAMILY_ID,
-  getTile,
-  getFamily,
-  getLevelOrder,
-  currentLine,
-  finalTier,
-} from '../data/families'
+import { FAMILIES, TYPE_IDS, EEVEE_FAMILY_ID, getTile, getFamily, currentLine, finalTier } from '../data/families'
 import { POWERS, type PowerId } from '../data/powers'
 import TypeCompendium from './TypeCompendium'
 
@@ -30,14 +21,11 @@ export default function Game() {
 
   const [score, setScore] = useState(0)
   const [bestScore, setBestScore] = useState(loadBestScore)
-  const [levelIndex, setLevelIndex] = useState(0)
-  const [familyId, setFamilyId] = useState(FAMILIES[0].id)
+  const [unlockedTypes, setUnlockedTypes] = useState<string[]>([])
   const [dropFamilyId, setDropFamilyId] = useState(FAMILIES[0].id)
   const [dropTier, setDropTier] = useState(0)
   const [nextFamilyId, setNextFamilyId] = useState(FAMILIES[0].id)
   const [nextTier, setNextTier] = useState(0)
-  const [levelBanner, setLevelBanner] = useState(false)
-  const [cycleBanner, setCycleBanner] = useState<number | null>(null)
   const [isGameOver, setIsGameOver] = useState(false)
   const [powerCharges, setPowerCharges] = useState<Record<PowerId, number>>(
     Object.fromEntries(POWERS.map((p) => [p.id, p.chargesPerLevel])) as Record<PowerId, number>,
@@ -67,18 +55,7 @@ export default function Game() {
     if (!containerRef.current) return
     const game = new PokemonMergeGame(containerRef.current, {
       onScoreChange: setScore,
-      onLevelChange: (idx, fam) => {
-        setLevelIndex(idx)
-        setFamilyId(fam)
-        setLevelBanner(false)
-        setCycleBanner(null)
-      },
-      onLevelComplete: () => {
-        setLevelBanner(true)
-      },
-      onCycleComplete: (cycleNumber) => {
-        setCycleBanner(cycleNumber)
-      },
+      onTypesUnlockedChange: setUnlockedTypes,
       onGameOver: (finalScore) => {
         setIsGameOver(true)
         setBestScore((prev) => {
@@ -182,8 +159,10 @@ export default function Game() {
 
   const nowTile = getTile(dropFamilyId, dropTier)
   const nextTile = getTile(nextFamilyId, nextTier)
-  const goalFamily = getFamily(familyId)
-  const goalTile = getTile(familyId, finalTier(goalFamily))
+  // Ambient tint/silhouette tracks whichever piece is queued up to drop right
+  // now — there's no single "goal" anymore since every unlocked type is
+  // equally active, so the mood just follows whatever's about to come down.
+  const dropFamily = getFamily(dropFamilyId)
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
   return (
@@ -213,8 +192,7 @@ export default function Game() {
         <HeaderBar
           score={score}
           bestScore={bestScore}
-          levelIndex={levelIndex}
-          goalTile={goalTile}
+          unlockedTypes={unlockedTypes}
           nowTile={nowTile}
           nextTile={nextTile}
           powers={activePowers}
@@ -229,16 +207,16 @@ export default function Game() {
         <div className="relative min-h-0 flex-1">
           <div
             className="absolute inset-0 overflow-hidden rounded-2xl bg-slate-900 transition-colors duration-500"
-            style={{ backgroundColor: `${goalFamily.color}1a` }}
+            style={{ backgroundColor: `${dropFamily.color}1a` }}
           >
             <div
-              key={goalTile.id}
+              key={nowTile.id}
               aria-hidden
               className="absolute top-1/2 left-1/2 h-[75%] w-[75%] -translate-x-1/2 -translate-y-1/2 opacity-40"
               style={{
-                backgroundColor: goalFamily.color,
-                WebkitMaskImage: `url(${goalTile.sprite})`,
-                maskImage: `url(${goalTile.sprite})`,
+                backgroundColor: dropFamily.color,
+                WebkitMaskImage: `url(${nowTile.sprite})`,
+                maskImage: `url(${nowTile.sprite})`,
                 WebkitMaskSize: 'contain',
                 maskSize: 'contain',
                 WebkitMaskRepeat: 'no-repeat',
@@ -293,23 +271,6 @@ export default function Game() {
               armedPower ? 'border-yellow-400' : 'border-slate-700'
             }`}
           >
-            {levelBanner && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-slate-950/80 backdrop-blur-sm">
-                <div className="text-lg font-bold text-yellow-300">Level Complete!</div>
-                <img src={goalTile.sprite} alt={goalTile.name} className="h-16 w-16 object-contain" />
-                <div className="text-slate-200">You formed a {goalTile.name}!</div>
-              </div>
-            )}
-
-            {cycleBanner !== null && (
-              <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-slate-950/90 px-6 text-center backdrop-blur-sm">
-                <div className="text-lg font-bold text-yellow-300">Every Type Discovered!</div>
-                <div className="text-slate-300">
-                  You've completed cycle {cycleBanner}. The adventure continues — same types, fresh run.
-                </div>
-              </div>
-            )}
-
             {isGameOver && (
               <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-slate-950/85 backdrop-blur-sm">
                 <div className="text-xl font-bold">Game Over</div>
@@ -318,10 +279,10 @@ export default function Game() {
                   onClick={handleRetryLevel}
                   className="rounded-lg bg-yellow-400 px-5 py-2 font-semibold text-slate-900 active:scale-95"
                 >
-                  Retry Level
+                  Retry
                 </button>
                 <button onClick={handleRestartGame} className="text-xs text-slate-400 underline">
-                  Restart from Level 1
+                  Restart Game
                 </button>
               </div>
             )}
@@ -331,7 +292,7 @@ export default function Game() {
 
       {infoOpen && (
         <InfoOverlay
-          levelIndex={levelIndex}
+          unlockedTypes={unlockedTypes}
           armedPower={armedPower}
           discovered={discovered}
           onClose={() => setInfoOpen(false)}
@@ -354,7 +315,7 @@ export default function Game() {
   )
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex flex-col items-center leading-none">
       <span className="text-[9px] text-slate-400">{label}</span>
@@ -370,8 +331,7 @@ function Divider() {
 function HeaderBar({
   score,
   bestScore,
-  levelIndex,
-  goalTile,
+  unlockedTypes,
   nowTile,
   nextTile,
   powers,
@@ -384,8 +344,7 @@ function HeaderBar({
 }: {
   score: number
   bestScore: number
-  levelIndex: number
-  goalTile: ReturnType<typeof getTile>
+  unlockedTypes: string[]
   nowTile: ReturnType<typeof getTile>
   nextTile: ReturnType<typeof getTile>
   powers: typeof POWERS
@@ -396,8 +355,6 @@ function HeaderBar({
   eeveeCaught: number
   onExchangeEevee: () => void
 }) {
-  const displayLevel = (levelIndex % TYPE_IDS.length) + 1
-
   return (
     <div
       className={`flex w-full shrink-0 flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-lg px-2 py-2 transition-shadow ${
@@ -407,19 +364,19 @@ function HeaderBar({
       <div className="flex items-center gap-1.5">
         <Stat label="Score" value={score} />
         <Stat label="Best" value={bestScore} />
-        <Stat label="Level" value={displayLevel} />
+        <Stat label="Types" value={`${unlockedTypes.length}/${TYPE_IDS.length}`} />
       </div>
 
       <Divider />
 
-      <div className="flex items-center gap-1">
-        <img
-          src={goalTile.sprite}
-          alt="Goal"
-          className="h-6 w-6 object-contain"
-          style={{ filter: 'brightness(0) opacity(0.55)' }}
-        />
-        <span className="text-xs text-slate-300">{goalTile.name}</span>
+      <div className="flex items-center gap-1" title={`Unlocked: ${unlockedTypes.join(', ')}`}>
+        {unlockedTypes.map((type) => (
+          <span
+            key={type}
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: currentLine(type).color }}
+          />
+        ))}
       </div>
 
       <Divider />
@@ -508,18 +465,16 @@ function PokeballIcon() {
 }
 
 function InfoOverlay({
-  levelIndex,
+  unlockedTypes,
   armedPower,
   discovered,
   onClose,
 }: {
-  levelIndex: number
+  unlockedTypes: string[]
   armedPower: PowerId | null
   discovered: Set<string>
   onClose: () => void
 }) {
-  const currentInCycle = levelIndex % TYPE_IDS.length
-  const cycleNumber = Math.floor(levelIndex / TYPE_IDS.length) + 1
   const totalDiscovered = discovered.size
   const totalTiles = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
 
@@ -541,28 +496,27 @@ function InfoOverlay({
         </div>
 
         <div className="text-sm text-slate-400">
-          Cycle {cycleNumber} — Level {currentInCycle + 1} of {TYPE_IDS.length}
+          {unlockedTypes.length} of {TYPE_IDS.length} types unlocked
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {getLevelOrder().map((type, i) => {
-            const state = i < currentInCycle ? 'done' : i === currentInCycle ? 'current' : 'locked'
+          {TYPE_IDS.map((type) => {
+            const unlocked = unlockedTypes.includes(type)
             const line = currentLine(type)
             const label = type.charAt(0).toUpperCase() + type.slice(1)
             return (
               <div
                 key={type}
                 className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs transition-opacity ${
-                  state === 'locked' ? 'border-slate-800 opacity-30' : 'border-slate-600 opacity-100'
+                  unlocked ? 'border-slate-600 opacity-100' : 'border-slate-800 opacity-30'
                 }`}
-                style={{ backgroundColor: state !== 'locked' ? `${line.color}22` : undefined }}
+                style={{ backgroundColor: unlocked ? `${line.color}22` : undefined }}
               >
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: state !== 'locked' ? line.color : '#475569' }}
+                  style={{ backgroundColor: unlocked ? line.color : '#475569' }}
                 />
-                {state === 'locked' ? '???' : label}
-                {state === 'done' && ' ✓'}
+                {unlocked ? label : '???'}
               </div>
             )
           })}

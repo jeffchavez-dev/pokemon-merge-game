@@ -67,10 +67,10 @@ export const TYPE_IDS = [
   'ice', 'psychic',
 ]
 
-// Level order: FAMILIES[0] is the first Electric line, etc. — grouped by
-// type via typeLines() below, in this same array order. Dedenne (no real
-// evolution) leads off Electric, so completing it hands straight into
-// Pichu/Pikachu/Raichu.
+// FAMILIES[0] is the first Electric line, etc. — grouped by type via
+// typeLines() below, in this same array order. Dedenne (no real evolution)
+// leads off Electric, so completing it hands straight into Pichu/Pikachu/
+// Raichu.
 export const FAMILIES: Family[] = [
   buildLine('electric0', 'Electric (Dedenne)', '#a8729e', [702], ['Dedenne']),
   buildLine('electric', 'Electric', '#facc15', [172, 25, 26], ['Pichu', 'Pikachu', 'Raichu']),
@@ -496,13 +496,12 @@ const MEW_PSEUDO_FAMILY: Family = {
 // into the browser's image cache up front means nothing is ever drawn before
 // it's already loaded.
 //
-// The loaded Image objects have to be kept alive somewhere (not just a local
-// loop variable) — otherwise nothing holds a reference to them once this
-// function returns, and the browser can garbage-collect an in-flight Image
-// before its request finishes, silently cancelling the fetch. With ~800
-// requests kicked off at once, most are still in flight when the loop ends,
-// so without this array the "preload" was mostly a no-op.
-const preloadedImages: HTMLImageElement[] = []
+// Keyed by URL (not just a flat array) so engine.ts can hand these exact
+// Image objects to Matter's own renderer (see getPreloadedTextures below) —
+// Matter keeps a completely separate texture cache and otherwise starts a
+// brand new, unrelated fetch the first time it draws any given sprite,
+// regardless of what's already been preloaded here.
+const preloadedImages = new Map<string, HTMLImageElement>()
 let spritesPreloaded = false
 export function preloadSprites(): void {
   if (spritesPreloaded || typeof window === 'undefined') return
@@ -514,8 +513,15 @@ export function preloadSprites(): void {
   for (const url of urls) {
     const img = new Image()
     img.src = url
-    preloadedImages.push(img)
+    preloadedImages.set(url, img)
   }
+}
+
+// Hands the already-loading (or already-loaded) preloaded Image objects to
+// Matter's renderer so it reuses them instead of creating fresh ones and
+// re-starting the load from scratch the first time a sprite is drawn.
+export function getPreloadedTextures(): Map<string, HTMLImageElement> {
+  return preloadedImages
 }
 
 export function typeOf(familyId: string): string {
@@ -566,54 +572,6 @@ export function setCursors(saved: Record<string, number>): void {
   }
 }
 
-// The first 5 levels stay in a fixed, predictable order (Electric, Fire,
-// Water, Grass, Bug) so the early game teaches the mechanics consistently.
-// Everything after that is shuffled once per game session — so which type
-// comes next stops being memorizable and each run's discoveries feel fresh.
-const FIXED_LEVEL_COUNT = 5
-
-function shuffled<T>(items: T[]): T[] {
-  const result = [...items]
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[result[i], result[j]] = [result[j], result[i]]
-  }
-  return result
-}
-
-function buildLevelOrder(): string[] {
-  return [...TYPE_IDS.slice(0, FIXED_LEVEL_COUNT), ...shuffled(TYPE_IDS.slice(FIXED_LEVEL_COUNT))]
-}
-
-let levelOrder: string[] = buildLevelOrder()
-
-// Call on a full restart (not a level retry) so a fresh run gets a fresh
-// shuffle rather than repeating the exact same order every time.
-export function reshuffleLevelOrder(): void {
-  levelOrder = buildLevelOrder()
-}
-
-export function getLevelOrder(): string[] {
-  return levelOrder
-}
-
-// Restores a previously-saved type order exactly, so a resumed game shows
-// the same goal at the same level it did before. Returns false (and leaves
-// the order untouched) if the ids don't cleanly map onto the current 18
-// types, e.g. an old save from before this refactor.
-export function setLevelOrder(ids: string[]): boolean {
-  if (ids.length !== TYPE_IDS.length) return false
-  if (!ids.every((id) => TYPE_IDS.includes(id))) return false
-  levelOrder = ids
-  return true
-}
-
-// Levels loop through the (partly shuffled) 18 types forever — level N's
-// type is getLevelOrder()[N % 18], so the game never runs out of content.
-export function getLevelType(levelIndex: number): string {
-  return levelOrder[levelIndex % TYPE_IDS.length]
-}
-
 export function getTile(familyId: string, tier: number): Tile {
   if (familyId === EEVEE_FAMILY_ID) return EEVEELUTIONS[tier]
   if (familyId === MEW_FAMILY_ID) return MEW_TILE
@@ -654,4 +612,53 @@ export const FUSION_RECIPES: FusionRecipe[] = [
 
 export function findFusionRecipe(typeA: string, typeB: string): FusionRecipe | undefined {
   return FUSION_RECIPES.find((r) => (r.a === typeA && r.b === typeB) || (r.a === typeB && r.b === typeA))
+}
+
+// Electric, Grass, Fire, and Normal never appear as a FUSION_RECIPES "boosts"
+// target — nothing can ever unlock them by fusing, so they're the only types
+// that have to be available from the very start. Every other type is reached
+// either by an already-unlocked type crossing halfway through its own line
+// list (revealing its direct recipe partner, see checkHalfwayUnlock below) or
+// by an actual fusion completing (see unlockType calls in engine.ts).
+export const STARTING_TYPES = ['electric', 'grass', 'fire', 'normal']
+
+const unlockedTypes = new Set<string>(STARTING_TYPES)
+
+export function isTypeUnlocked(type: string): boolean {
+  return unlockedTypes.has(type)
+}
+
+export function getUnlockedTypes(): string[] {
+  return Array.from(unlockedTypes)
+}
+
+// Monotonic — a type once unlocked always stays unlocked, even if a later
+// roster change shifts what "halfway" means for other types. Safe to call
+// repeatedly with the same type.
+export function unlockType(type: string): void {
+  unlockedTypes.add(type)
+}
+
+// Restores a previously-saved unlocked set. Anything not a real type id is
+// dropped rather than trusted, same defensive stance as setCursors.
+export function setUnlockedTypes(ids: string[]): void {
+  for (const id of ids) {
+    if (TYPE_IDS.includes(id)) unlockedTypes.add(id)
+  }
+}
+
+// Called after every hand-off for `type` — once its cursor has walked half
+// of its own line list, every FUSION_RECIPES entry it appears in reveals its
+// partner as newly droppable (even though actually fusing still requires
+// both sides fully Type Complete). Re-evaluated fresh off the current
+// roster each time rather than cached, but since unlocking only ever adds to
+// the set, an earlier unlock is never undone by a later roster change.
+export function checkHalfwayUnlock(type: string): void {
+  const lines = typeLines(type)
+  const halfway = Math.ceil(lines.length / 2)
+  if (getCursor(type) < halfway) return
+  for (const recipe of FUSION_RECIPES) {
+    if (recipe.a === type) unlockType(recipe.b)
+    else if (recipe.b === type) unlockType(recipe.a)
+  }
 }

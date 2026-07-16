@@ -1,23 +1,27 @@
 import Matter from 'matter-js'
 import {
   FAMILIES,
-  TYPE_IDS,
+  STARTING_TYPES,
   getTile,
   getFamily,
-  getLevelType,
-  getLevelOrder,
-  reshuffleLevelOrder,
-  setLevelOrder,
   typeOf,
   currentLine,
   advanceCursor,
   isTypeComplete,
+  getCursor,
   getCursors,
   setCursors,
+  getUnlockedTypes,
+  setUnlockedTypes,
+  isTypeUnlocked,
+  unlockType,
+  checkHalfwayUnlock,
   findFusionRecipe,
   finalTier,
+  typeLines,
   randomEeveelutionTier,
   preloadSprites,
+  getPreloadedTextures,
   eeveeTradeValue,
   EEVEE_FAMILY_ID,
   MEW_FAMILY_ID,
@@ -37,7 +41,6 @@ const GAME_OVER_GRACE_MS = 1200
 const DROP_COOLDOWN_MS = 450
 const RESTING_SPEED = 0.15
 const CELEBRATION_MS = 1500
-const CYCLE_BANNER_MS = 2200
 const THUNDER_MAX_TARGETS = 3
 const EXPLOSION_MS = 650
 const EXPLOSION_COOLDOWN_MS = 900
@@ -45,13 +48,14 @@ const EXPLOSION_COOLDOWN_MS = 900
 // "boom" moment instead: a blast radius that crushes whatever weaker pieces
 // are caught nearby, rather than the two just bouncing off each other.
 const CAPSTONE_BLAST_RADIUS = 170
-// Every 3rd level, a wild Eevee is guaranteed in the queue; every 5th level,
-// Mew is instead (Mew wins on the rare level that's a multiple of both).
-// Both keep hopping on this interval for as long as they're uncaught — they
-// never settle down and give up, so leaving them too long stays risky.
+// Every 3rd hand-off (across any unlocked type), a wild Eevee is guaranteed
+// in the queue; every 5th hand-off, Mew is instead (Mew wins on the rare
+// hand-off that's a multiple of both). Both keep hopping on this interval
+// for as long as they're uncaught — they never settle down and give up, so
+// leaving them too long stays risky.
 const SPECIAL_HOP_INTERVAL_MS = 1100
-const MEW_LEVEL_INTERVAL = 5
-const EEVEE_LEVEL_INTERVAL = 3
+const MEW_HANDOFF_INTERVAL = 5
+const EEVEE_HANDOFF_INTERVAL = 3
 // Mew's catch is a screen-filling event rather than a local one.
 const MEW_BLAST_MS = 900
 
@@ -63,20 +67,24 @@ const WALL_CATEGORY = 0x0002
 const SPECIAL_CATEGORY = 0x0004
 
 // Progress persists across a page refresh (or just closing the tab) so a
-// reload resumes exactly where you left off — only "Restart from Level 1"
-// (an explicit choice) actually clears it. Bumped SAVE_VERSION invalidates
-// any old save whose shape no longer matches, rather than crashing on it.
+// reload resumes exactly where you left off — only an explicit restart
+// actually clears it. Bumped SAVE_VERSION invalidates any old save whose
+// shape no longer matches, rather than crashing on it.
 const SAVE_KEY = 'pokemon-merge-save'
-// Bumped again: reordering each type's line sequence (the capstone
-// curation pass) changed what a saved per-type cursor *index* actually
-// points at, even though the save's shape didn't change — an old save's
-// cursor would silently land on the wrong line under the new order.
-const SAVE_VERSION = 3
+// Bumped again: replaced the level-index/level-order save shape with the
+// unlocked-types model (fusion-driven type unlocking instead of a fixed/
+// shuffled per-level type schedule) — an old save's levelIndex has no
+// equivalent meaning under the new model, so it can't be migrated.
+const SAVE_VERSION = 5
+// A line that just stopped being a type's active one (its type moved on to
+// the next line) keeps a shrinking chance to still appear in drops for a
+// random 5-10 more hand-offs of its own type — long enough that a lone
+// unpaired leftover isn't instantly stranded, short enough that it's still
+// a genuine phase-out rather than sticking around forever.
+const STALE_LINE_MIN_HANDOFFS = 5
+const STALE_LINE_MAX_HANDOFFS = 10
+const STALE_LINE_MAX_DROP_CHANCE = 0.35
 const AUTOSAVE_INTERVAL_MS = 2000
-// The pause between "line discovered, choose a power" and the level actually
-// advancing, when the completed line is also this level's own type — gives
-// the power choice a beat to land before the board resets for the next type.
-const LINE_TO_LEVEL_TRANSITION_MS = 400
 
 type SavedBody = {
   familyId: string
@@ -87,19 +95,25 @@ type SavedBody = {
 
 type SavedGame = {
   version: number
-  levelIndex: number
   score: number
-  levelOrderIds: string[]
+  unlockedTypeIds: string[]
   cursors: Record<string, number>
   discovered: string[]
   powerCharges: Record<PowerId, number>
   bonusUnlockedPowerIds: PowerId[]
   eeveeCaught: number
+  handoffCount: number
   dropFamilyId: string
   dropTier: number
   nextDropFamilyId: string
   nextDropTier: number
   bodies: SavedBody[]
+  staleLines: Record<string, StaleLineEntry>
+}
+
+type StaleLineEntry = {
+  handoffsLeft: number
+  initialHandoffs: number
 }
 
 type TilePlugin = {
@@ -188,9 +202,7 @@ function pluginOf(body: Matter.Body): TilePlugin | undefined {
 
 export interface GameCallbacks {
   onScoreChange: (score: number) => void
-  onLevelChange: (levelIndex: number, familyId: string) => void
-  onLevelComplete: (levelIndex: number) => void
-  onCycleComplete: (cycleNumber: number) => void
+  onTypesUnlockedChange: (unlockedTypes: string[]) => void
   onGameOver: (finalScore: number) => void
   onQueueChange: (dropFamilyId: string, dropTier: number, nextFamilyId: string, nextTier: number) => void
   onPowerChargesChange: (charges: Record<PowerId, number>) => void
@@ -319,29 +331,31 @@ export class PokemonMergeGame {
   private dangerZoneY: number
   private thunderRadius: number
 
-  private levelIndex = 0
   private score = 0
   private aimX = 0
   private canDrop = true
   private gameOver = false
   private frozen = false
-  // Set when a just-completed line belongs to the type this level is
-  // actually testing — once the resulting power choice is made, the level
-  // (not just the line) advances too.
-  private pendingLevelAdvance = false
+  // Total hand-offs across every unlocked type this session — the general
+  // pacing pulse that replaced level-index (Eevee/Mew timing, power
+  // unlocks). See onHandoff.
+  private handoffCount = 0
   private dropFamilyId = FAMILIES[0].id
   private dropTier = 0
   private nextDropFamilyId = FAMILIES[0].id
   private nextDropTier = 0
+  // A line that just stopped being its type's active one, still keeping a
+  // shrinking chance to drop for a few more hand-offs — see markLineStale.
+  private staleLines: Record<string, StaleLineEntry> = {}
   private powerCharges: Record<PowerId, number> = this.freshCharges()
   private armedPower: PowerId | null = null
   private isDanger = false
   // Powers unlocked early via a capstone bonus pick, on top of the normal
-  // one-per-level schedule. Persists for the whole game session.
+  // hand-off-count schedule. Persists for the whole game session.
   private bonusUnlockedPowers = new Set<PowerId>()
   // Eevee-line pieces caught with Poke Ball, banked here instead of just
   // vanishing — spent later to trade for a bonus power. Persists across
-  // levels (like bonusUnlockedPowers), only cleared on a full restart.
+  // retries (like bonusUnlockedPowers), only cleared on a full restart.
   private eeveeCaught = 0
   private saveIntervalId: ReturnType<typeof setInterval> | null = null
 
@@ -366,7 +380,7 @@ export class PokemonMergeGame {
     if (saved) {
       this.resumeFromSave(saved)
     } else {
-      this.startLevel(0, false, true)
+      this.resetBoard(false, true)
     }
     this.saveIntervalId = setInterval(() => this.persist(), AUTOSAVE_INTERVAL_MS)
   }
@@ -379,18 +393,19 @@ export class PokemonMergeGame {
       })
       const saved: SavedGame = {
         version: SAVE_VERSION,
-        levelIndex: this.levelIndex,
         score: this.score,
-        levelOrderIds: getLevelOrder(),
+        unlockedTypeIds: getUnlockedTypes(),
         cursors: getCursors(),
         discovered: Array.from(this.discovered),
         powerCharges: this.powerCharges,
         bonusUnlockedPowerIds: Array.from(this.bonusUnlockedPowers),
         eeveeCaught: this.eeveeCaught,
+        handoffCount: this.handoffCount,
         dropFamilyId: this.dropFamilyId,
         dropTier: this.dropTier,
         nextDropFamilyId: this.nextDropFamilyId,
         nextDropTier: this.nextDropTier,
+        staleLines: this.staleLines,
         bodies,
       }
       localStorage.setItem(SAVE_KEY, JSON.stringify(saved))
@@ -420,31 +435,25 @@ export class PokemonMergeGame {
     }
   }
 
-  // Rebuilds the board and all progress from a save instead of starting
-  // fresh at level 1 — a page refresh (or just reopening the tab later)
-  // should resume exactly where the player left off.
+  // Rebuilds the board and all progress from a save instead of starting a
+  // fresh run — a page refresh (or just reopening the tab later) should
+  // resume exactly where the player left off.
   private resumeFromSave(saved: SavedGame) {
-    if (!setLevelOrder(saved.levelOrderIds)) {
-      // Save doesn't match the current roster (e.g. an old save from
-      // before families were added) — safer to start clean than show a
-      // mismatched level/goal pairing.
-      this.startLevel(0, false, true)
-      return
-    }
     setCursors(saved.cursors ?? {})
-    this.levelIndex = saved.levelIndex
+    setUnlockedTypes(saved.unlockedTypeIds ?? STARTING_TYPES)
     this.score = saved.score
     this.discovered = new Set(saved.discovered)
     this.powerCharges = saved.powerCharges
     this.bonusUnlockedPowers = new Set(saved.bonusUnlockedPowerIds)
     this.eeveeCaught = saved.eeveeCaught
-    // Don't trust a saved drop queue blindly — only the current level's own
-    // type (or a queued Eevee/Mew) is ever valid to drop now. A save written
-    // under an older pool rule (or before a line-order change) could still
-    // have a stale entry from some other type; falling back to a fresh pick
-    // is exactly what would happen on the very next drop anyway.
+    this.staleLines = saved.staleLines ?? {}
+    this.handoffCount = saved.handoffCount ?? 0
+    // Don't trust a saved drop queue blindly — only a currently unlocked
+    // type (or a queued Eevee/Mew) is ever valid to drop now. Falling back
+    // to a fresh pick is exactly what would happen on the very next drop
+    // anyway.
     const isValidQueued = (famId: string) =>
-      famId === EEVEE_FAMILY_ID || famId === MEW_FAMILY_ID || typeOf(famId) === typeOf(this.currentFamily().id)
+      famId === EEVEE_FAMILY_ID || famId === MEW_FAMILY_ID || isTypeUnlocked(typeOf(famId))
     if (isValidQueued(saved.dropFamilyId)) {
       this.dropFamilyId = saved.dropFamilyId
       this.dropTier = saved.dropTier
@@ -497,7 +506,7 @@ export class PokemonMergeGame {
     this.spawnPreview()
 
     this.callbacks.onScoreChange(this.score)
-    this.callbacks.onLevelChange(this.levelIndex, this.currentFamily().id)
+    this.callbacks.onTypesUnlockedChange(getUnlockedTypes())
     this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
     this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     this.callbacks.onArmedPowerChange(null)
@@ -527,6 +536,16 @@ export class PokemonMergeGame {
         background: 'transparent',
       },
     })
+    // Matter's own renderer keeps a completely separate texture cache from
+    // the one families.ts warms up front (see preloadSprites) — without
+    // this, Matter starts a brand new, unrelated Image fetch the first time
+    // it ever draws a given sprite, and draws nothing until that finishes
+    // (an unloaded Image has width/height 0, which Matter uses directly as
+    // the drawImage destination size). Handing it the already-loading
+    // preloaded Images closes that gap.
+    for (const [url, img] of getPreloadedTextures()) {
+      this.render.textures[url] = img
+    }
     this.runner = Matter.Runner.create()
 
     const wallOptions: Matter.IChamferableBodyDefinition = {
@@ -579,25 +598,20 @@ export class PokemonMergeGame {
     Matter.Runner.run(this.runner, this.engine)
   }
 
-  // The line currently active for whichever type this level is testing.
-  private currentFamily() {
-    return currentLine(getLevelType(this.levelIndex))
-  }
-
-  // Types shrink the further back they are from whichever type is the
-  // CURRENT level's target (wrapping around the 18-type rotation), so the
-  // active challenge always reads as the biggest thing on the board and
-  // types you cleared a while ago fade into the background rather than
-  // cluttering it at full size forever.
+  // Types shrink the further their own cursor has moved past a given line
+  // (regardless of which OTHER types are also unlocked), so the lines a
+  // type is actively working through read as the biggest thing on the
+  // board and lines it's long since moved past fade into the background
+  // rather than cluttering it at full size forever.
   private familySizeMultiplier(familyId: string): number {
-    // Eevee/Mew aren't part of the level rotation, so they have no
+    // Eevee/Mew aren't part of any type's line sequence, so they have no
     // "distance back" to measure — always render at full size since
     // they're rare finds.
     if (familyId === EEVEE_FAMILY_ID || familyId === MEW_FAMILY_ID) return 1
-    const order = getLevelOrder()
-    const currentIdx = this.levelIndex % order.length
-    const typeIdx = order.indexOf(typeOf(familyId))
-    const distanceBack = (currentIdx - typeIdx + order.length) % order.length
+    const type = typeOf(familyId)
+    const lines = typeLines(type)
+    const lineIdx = lines.findIndex((f) => f.id === familyId)
+    const distanceBack = Math.max(0, getCursor(type) - lineIdx)
     const shrinkPerStep = 0.05
     const minMultiplier = 0.55
     return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
@@ -611,24 +625,51 @@ export class PokemonMergeGame {
     return (this.radius(tile) * 2) / tile.spriteSize
   }
 
-  // Only the current level's own type drops — no grab-bag of recently-seen
-  // types. Older types' stray leftovers stay on the board and stay
-  // mergeable with each other (same type + same tier still applies), they
-  // just don't get fresh drops again until their type comes back around in
-  // the rotation.
+  // Picks uniformly among every currently unlocked type's own active line.
+  // Older, superseded leftovers stay on the board and stay mergeable with
+  // themselves, and a line that *just* went stale keeps a shrinking chance
+  // to still drop for a few more hand-offs (see markLineStale) —
+  // everything else stops getting fresh drops until it's picked here again.
   private weightedPoolFamilyId(): string {
-    return this.currentFamily().id
+    const unlocked = getUnlockedTypes()
+    const staleCandidates = Object.entries(this.staleLines).filter(([familyId]) => unlocked.includes(typeOf(familyId)))
+    for (const [familyId, entry] of staleCandidates) {
+      const chance = (entry.handoffsLeft / entry.initialHandoffs) * STALE_LINE_MAX_DROP_CHANCE
+      if (Math.random() < chance) return familyId
+    }
+    const type = unlocked[Math.floor(Math.random() * unlocked.length)]
+    return currentLine(type).id
   }
 
-  // Base-stage drops are the norm, but once a few levels have passed,
-  // occasionally drop an already-evolved (tier 1) Pokemon instead — capped
-  // so it stays a spice, not the majority of drops. Never for the current
-  // level's target family though: an evolved-form freebie there would skip
-  // most of the grind toward that level's actual goal.
+  // Base-stage drops are the norm, but a stale line's grace-window drops
+  // occasionally come in already-evolved (tier 1) instead — a small nudge
+  // toward pairing off whatever's left of it before its window runs out.
+  // Never for a type's own active line though: an evolved-form freebie
+  // there would skip most of the grind toward that line's own progress.
   private rollDropTier(familyId: string): 0 | 1 {
-    if (familyId === this.currentFamily().id) return 0
-    const evolvedChance = Math.min(0.3, this.levelIndex * 0.02)
+    if (familyId === currentLine(typeOf(familyId)).id) return 0
+    const evolvedChance = Math.min(0.3, this.handoffCount * 0.01)
     return Math.random() < evolvedChance ? 1 : 0
+  }
+
+  // Called once, right when a line stops being its type's active one — it
+  // keeps a shrinking chance to still appear in drops for a random 5-10
+  // more hand-offs of its own type before it stops for good.
+  private markLineStale(familyId: string) {
+    const initialHandoffs =
+      STALE_LINE_MIN_HANDOFFS + Math.floor(Math.random() * (STALE_LINE_MAX_HANDOFFS - STALE_LINE_MIN_HANDOFFS + 1))
+    this.staleLines[familyId] = { handoffsLeft: initialHandoffs, initialHandoffs }
+  }
+
+  // Called on every hand-off for a type — ticks down every currently-stale
+  // line of that same type by one, dropping it once its window runs out.
+  private decayStaleLines(type: string) {
+    for (const familyId of Object.keys(this.staleLines)) {
+      if (typeOf(familyId) !== type) continue
+      const entry = this.staleLines[familyId]
+      entry.handoffsLeft -= 1
+      if (entry.handoffsLeft <= 0) delete this.staleLines[familyId]
+    }
   }
 
   private freshCharges(): Record<PowerId, number> {
@@ -637,18 +678,16 @@ export class PokemonMergeGame {
     return charges
   }
 
-  // Powers a player has unlocked so far: one per level on the normal
+  // Powers a player has unlocked so far: one per few hand-offs on the normal
   // schedule, plus any picked early via a capstone bonus.
   activePowers() {
-    return POWERS.filter((p) => p.unlockLevel <= this.levelIndex || this.bonusUnlockedPowers.has(p.id))
+    return POWERS.filter((p) => p.unlockLevel <= this.handoffCount || this.bonusUnlockedPowers.has(p.id))
   }
 
-  // clearBoard is false for normal level-to-level progression — the board
-  // (and its growing clutter) carries over, since the goal just changes.
-  // It's only cleared on an explicit retry (after game over) or a full
-  // restart, where a fresh board is actually needed.
-  private startLevel(index: number, keepScore: boolean, clearBoard: boolean) {
-    this.levelIndex = index
+  // clearBoard is false when just resuming/continuing — the board (and its
+  // growing clutter) carries over. It's only cleared on an explicit retry
+  // (after game over) or a full restart, where a fresh board is needed.
+  private resetBoard(keepScore: boolean, clearBoard: boolean) {
     this.gameOver = false
     this.frozen = false
     this.canDrop = true
@@ -672,34 +711,42 @@ export class PokemonMergeGame {
     this.aimX = this.width / 2
     this.dropFamilyId = this.weightedPoolFamilyId()
     this.dropTier = this.rollDropTier(this.dropFamilyId)
-    // A wild Eevee (one of its 9 forms, picked fresh each visit) is queued
-    // up as the second drop, guaranteed, every 3rd level. Every 5th level,
-    // Mew shows up instead — on the rare level that's a multiple of both,
-    // Mew wins since it's the bigger event.
-    const isMewLevel = (this.levelIndex + 1) % MEW_LEVEL_INTERVAL === 0
-    const isEeveeLevel = !isMewLevel && (this.levelIndex + 1) % EEVEE_LEVEL_INTERVAL === 0
-    if (isMewLevel) {
-      this.nextDropFamilyId = MEW_FAMILY_ID
-      this.nextDropTier = 0
-    } else if (isEeveeLevel) {
-      this.nextDropFamilyId = EEVEE_FAMILY_ID
-      this.nextDropTier = randomEeveelutionTier()
-    } else {
-      this.nextDropFamilyId = this.weightedPoolFamilyId()
-      this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
-    }
+    this.nextDropFamilyId = this.weightedPoolFamilyId()
+    this.nextDropTier = this.rollDropTier(this.nextDropFamilyId)
     this.spawnPreview()
 
     this.callbacks.onScoreChange(this.score)
-    this.callbacks.onLevelChange(this.levelIndex, this.currentFamily().id)
+    this.callbacks.onTypesUnlockedChange(getUnlockedTypes())
     this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
     this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     this.callbacks.onArmedPowerChange(null)
     this.callbacks.onDangerChange(false)
     this.callbacks.onActivePowersChange(this.activePowers().map((p) => p.id))
-    if (isMewLevel) this.callbacks.onMewLevelAnnounced()
-    else if (isEeveeLevel) this.callbacks.onEeveeLevelAnnounced()
     this.persist()
+  }
+
+  // Called after every hand-off (across any unlocked type) and every
+  // completed fusion — the general pacing pulse that replaced level-index.
+  // Every 3rd hand-off queues a wild Eevee as the next drop; every 5th
+  // queues Mew instead (Mew wins on the rare hand-off that's a multiple of
+  // both). Both keep hopping once dropped (see SPECIAL_HOP_INTERVAL_MS)
+  // until caught or they escape.
+  private onHandoff() {
+    this.handoffCount += 1
+    const isMewMoment = this.handoffCount % MEW_HANDOFF_INTERVAL === 0
+    const isEeveeMoment = !isMewMoment && this.handoffCount % EEVEE_HANDOFF_INTERVAL === 0
+    if (isMewMoment) {
+      this.nextDropFamilyId = MEW_FAMILY_ID
+      this.nextDropTier = 0
+    } else if (isEeveeMoment) {
+      this.nextDropFamilyId = EEVEE_FAMILY_ID
+      this.nextDropTier = randomEeveelutionTier()
+    } else {
+      return
+    }
+    this.callbacks.onQueueChange(this.dropFamilyId, this.dropTier, this.nextDropFamilyId, this.nextDropTier)
+    if (isMewMoment) this.callbacks.onMewLevelAnnounced()
+    else this.callbacks.onEeveeLevelAnnounced()
   }
 
   private markDiscovered(familyId: string, tier: number) {
@@ -725,13 +772,10 @@ export class PokemonMergeGame {
     ctx.restore()
   }
 
-  // Same-type-same-tier merging means two pieces that merge together don't
-  // necessarily look alike anymore (a Charmeleon and a Braixen can merge —
-  // same type, same tier, different species). Without some signal, there's
-  // no way to tell by looking. So: a colored ring around every piece that
-  // currently has a live partner on the board — that type's own color for a
-  // normal same-tier match, amber for a pair that's Type Complete on both
-  // sides (fuses into a rarer type, or explodes if no recipe connects them).
+  // A colored ring around every piece that currently has a live mergeable
+  // partner on the board — that line's own color for a normal same-line-
+  // same-tier match, amber for a pair that's Type Complete on both sides
+  // (fuses into a rarer type, or explodes if no recipe connects them).
   private drawMergeIndicators() {
     const ctx = this.render.context
     const now = this.engine.timing.timestamp
@@ -750,7 +794,7 @@ export class PokemonMergeGame {
         capped.push(body)
         continue
       }
-      const key = `${typeOf(plugin.familyId)}:${plugin.tier}`
+      const key = `${plugin.familyId}:${plugin.tier}`
       const list = groups.get(key) ?? []
       list.push(body)
       groups.set(key, list)
@@ -770,8 +814,8 @@ export class PokemonMergeGame {
 
     for (const [key, list] of groups) {
       if (list.length < 2) continue
-      const type = key.split(':')[0]
-      const color = currentLine(type).color
+      const familyId = key.split(':')[0]
+      const color = getFamily(familyId).color
       for (const body of list) drawRing(body, color)
     }
 
@@ -1106,11 +1150,12 @@ export class PokemonMergeGame {
 
     if (pa.merging || pb.merging) return
     if (pa.tier !== pb.tier) return
-    // Same type + same tier merges regardless of which specific line either
-    // piece came from — a stray Charmeleon and a stray Braixen (both Fire,
-    // both tier 1) can merge together, so no piece is ever stranded just
-    // because its own exact line isn't dropping anymore.
-    if (typeOf(pa.familyId) !== typeOf(pb.familyId)) return
+    // Same LINE + same tier only — a stray Charmeleon no longer merges with
+    // a stray Braixen just because both are Fire. The one place cross-line
+    // progress still happens is the hand-off (two copies of a line already
+    // at its own final stage advance the type into its next line, handled
+    // in applyMerge), which this same familyId check already covers.
+    if (pa.familyId !== pb.familyId) return
 
     pa.merging = true
     pb.merging = true
@@ -1151,7 +1196,10 @@ export class PokemonMergeGame {
   // Two different, fully Type Complete pieces whose types share a Fusion
   // Ladder recipe: both are consumed and the recipe's target type jumps
   // ahead by one line — so a maxed-out type's pieces stay useful forever
-  // instead of just sitting there once there's nothing left to merge.
+  // instead of just sitting there once there's nothing left to merge. This
+  // is also how a fully fusion-derived type (anything besides the four
+  // starting types) first joins the permanently unlocked, actively-dropping
+  // set — not just a one-off spawn.
   private applyFusion(a: Matter.Body, b: Matter.Body, recipe: FusionRecipe) {
     const midX = (a.position.x + b.position.x) / 2
     const midY = (a.position.y + b.position.y) / 2
@@ -1159,6 +1207,8 @@ export class PokemonMergeGame {
 
     const boostType = recipe.boosts
     if (!isTypeComplete(boostType)) advanceCursor(boostType)
+    unlockType(boostType)
+    this.onHandoff()
     const tile = getTile(currentLine(boostType).id, 0)
 
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
@@ -1346,27 +1396,53 @@ export class PokemonMergeGame {
     Matter.Composite.remove(this.engine.world, [a, b])
 
     const type = typeOf(pa.familyId)
+    const linesForType = typeLines(type)
     const active = currentLine(type)
-    const activeFinal = finalTier(active)
     const wasTypeComplete = isTypeComplete(type)
+    const ownFinal = finalTier(getFamily(pa.familyId))
 
     let tile: Tile
     let isHandoff = false
     let justReachedLineFinal = false
-    if (pa.tier >= activeFinal) {
-      // Both inputs are already at the active line's own final real stage
-      // (e.g. two Charizards, or a Charizard + another maxed Fire final) —
-      // that pair bumping is what hands the type off to its next line, not
-      // just forming the final species in the first place.
+    if (pa.tier >= ownFinal) {
+      // Two copies of this SAME line, already at its own final real stage.
+      // If this is the type's CURRENTLY active line, that's a genuine new
+      // hand-off — advance the cursor into the type's next line. If it's an
+      // older, already-superseded line, it always hands off to the one
+      // fixed line that directly followed it (never wherever the cursor
+      // currently sits) — so a leftover species stays productive forever
+      // without being able to vault the type past lines it never touched.
       isHandoff = true
-      if (!wasTypeComplete) advanceCursor(type)
-      const next = currentLine(type)
-      tile = wasTypeComplete ? getTile(next.id, finalTier(next)) : getTile(next.id, 0)
+      const wasActiveLine = pa.familyId === active.id
+      if (wasActiveLine) {
+        if (!wasTypeComplete) advanceCursor(type)
+        const next = currentLine(type)
+        tile = wasTypeComplete ? getTile(next.id, finalTier(next)) : getTile(next.id, 0)
+        this.markLineStale(pa.familyId)
+      } else {
+        const ownIndex = linesForType.findIndex((f) => f.id === pa.familyId)
+        const next = linesForType[ownIndex + 1]
+        tile = getTile(next.id, 0)
+      }
+      this.decayStaleLines(type)
+      checkHalfwayUnlock(type)
+      this.onHandoff()
     } else {
       const newTier = pa.tier + 1
-      tile = getTile(active.id, newTier)
-      justReachedLineFinal = newTier === activeFinal
+      tile = getTile(pa.familyId, newTier)
+      justReachedLineFinal = newTier === ownFinal
     }
+
+    // A type's true capstone — its very last line's own final species,
+    // formed for the very first time — deserves the full "discovered!"
+    // treatment regardless of which level is currently active, since
+    // leftover pieces from earlier types routinely keep progressing in the
+    // background. Keyed off "never discovered before" rather than the
+    // cursor's completion flag, so an unrelated stale line catching up
+    // after its type already finished elsewhere doesn't re-trigger it.
+    const typeLastLine = linesForType[linesForType.length - 1]
+    const isAbsoluteFinal = tile.familyId === typeLastLine.id && tile.tier === finalTier(typeLastLine)
+    const justCompletedType = isAbsoluteFinal && !this.discovered.has(tile.id)
 
     this.spawnMergeEffect(tile.familyId, midX, midY)
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
@@ -1396,21 +1472,9 @@ export class PokemonMergeGame {
     this.score += tile.scoreValue
     this.callbacks.onScoreChange(this.score)
 
-    if (isHandoff) {
-      const isCurrentLevelType = type === getLevelType(this.levelIndex)
+    if (isHandoff || justCompletedType) {
       this.callbacks.onMergeFormed({ aName, bName, resultName: tile.name, type, kind: 'handoff' })
-      this.beginLineComplete(active.id, aName, bName, midX, midY, isCurrentLevelType)
-      return true
-    }
-    if (justReachedLineFinal && wasTypeComplete) {
-      // This type has no line left to hand off to — its very last line's
-      // own final species would otherwise never get more than the small
-      // "line final" toast, since two of it colliding later just explodes
-      // (nothing to merge into). Reaching it for the first time IS this
-      // type's real capstone moment, so give it the full treatment now.
-      const isCurrentLevelType = type === getLevelType(this.levelIndex)
-      this.callbacks.onMergeFormed({ aName, bName, resultName: tile.name, type, kind: 'handoff' })
-      this.beginLineComplete(tile.familyId, aName, bName, midX, midY, isCurrentLevelType)
+      this.beginLineComplete(pa.familyId, aName, bName, midX, midY)
       return true
     }
     this.callbacks.onMergeFormed({
@@ -1423,26 +1487,12 @@ export class PokemonMergeGame {
     return false
   }
 
-  // A line finishing (two same-type finals bumping) only interrupts play
-  // and offers a bonus power choice when it's the type THIS level is
-  // actually testing — a background hand-off on some other type just
-  // advances quietly (its own onMergeFormed toast already covers it),
-  // rather than spamming a power choice for progress the player didn't
-  // deliberately work toward this level.
-  private beginLineComplete(
-    completedLineId: string,
-    aName: string,
-    bName: string,
-    x: number,
-    y: number,
-    isCurrentLevelType: boolean,
-  ) {
-    if (!isCurrentLevelType) {
-      this.spawnCelebrationEffect(completedLineId, x, y)
-      return
-    }
+  // Every hand-off gets the full "discovered!" modal and a bonus power
+  // choice now — there's no more single "current level" to gate it behind,
+  // since every unlocked type is equally something the player is actively
+  // pursuing at once.
+  private beginLineComplete(completedLineId: string, aName: string, bName: string, x: number, y: number) {
     this.frozen = true
-    this.pendingLevelAdvance = true
     this.celebration = { x, y, t: 0, duration: CELEBRATION_MS, familyId: completedLineId }
     this.spawnCelebrationEffect(completedLineId, x, y)
     setTimeout(() => {
@@ -1452,9 +1502,7 @@ export class PokemonMergeGame {
   }
 
   // Resolves a line-complete bonus choice: unlocks the power if it isn't
-  // active yet, otherwise grants a bonus charge for the rest of this level.
-  // This modal only ever appears for the current level's own type (or an
-  // Eevee trade), so the level itself always advances next.
+  // active yet, otherwise grants a bonus charge going forward.
   choosePower(id: PowerId) {
     if (!this.activePowers().some((p) => p.id === id)) {
       this.bonusUnlockedPowers.add(id)
@@ -1463,28 +1511,7 @@ export class PokemonMergeGame {
       this.powerCharges[id] = (this.powerCharges[id] ?? 0) + 1
       this.callbacks.onPowerChargesChange({ ...this.powerCharges })
     }
-    if (this.pendingLevelAdvance) {
-      this.pendingLevelAdvance = false
-      this.runLevelTransition()
-    } else {
-      this.frozen = false
-    }
-  }
-
-  // Advances the level rotation to the next type, matching the pacing a
-  // "goal reached" celebration used to have on its own.
-  private runLevelTransition() {
-    this.callbacks.onLevelComplete(this.levelIndex)
-    setTimeout(() => {
-      const nextIndex = this.levelIndex + 1
-      const wrapsToNewCycle = nextIndex > 0 && nextIndex % TYPE_IDS.length === 0
-      if (wrapsToNewCycle) {
-        this.callbacks.onCycleComplete(nextIndex / TYPE_IDS.length)
-        setTimeout(() => this.startLevel(nextIndex, true, false), CYCLE_BANNER_MS)
-      } else {
-        this.startLevel(nextIndex, true, false)
-      }
-    }, LINE_TO_LEVEL_TRANSITION_MS)
+    this.frozen = false
   }
 
   private updateCelebration() {
@@ -1636,7 +1663,7 @@ export class PokemonMergeGame {
   }
 
   retryLevel() {
-    this.startLevel(this.levelIndex, true, true)
+    this.resetBoard(true, true)
   }
 
   restartGame() {
@@ -1644,8 +1671,7 @@ export class PokemonMergeGame {
     this.eeveeCaught = 0
     this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
     this.clearSave()
-    reshuffleLevelOrder()
-    this.startLevel(0, false, true)
+    this.resetBoard(false, true)
   }
 
   // --- Eevee collectible --------------------------------------------------
@@ -1713,14 +1739,13 @@ export class PokemonMergeGame {
   }
 
   // Mew's catch isn't banked — it fires immediately: every piece on the
-  // board except the current level's target family gets swept away in one
-  // big blast, clearing clutter down to just what you actually need for
-  // the goal.
+  // board that isn't its own type's currently active line gets swept away
+  // in one big blast, clearing clutter down to just what's still useful.
   private catchMew(x: number, y: number) {
-    const currentFamilyId = this.currentFamily().id
     const casualties = this.dynamicBodies().filter((body) => {
       const plugin = pluginOf(body)!
-      return plugin.familyId !== currentFamilyId
+      if (plugin.familyId === EEVEE_FAMILY_ID || plugin.familyId === MEW_FAMILY_ID) return true
+      return plugin.familyId !== currentLine(typeOf(plugin.familyId)).id
     })
     for (const body of casualties) {
       const plugin = pluginOf(body)!
@@ -1743,7 +1768,6 @@ export class PokemonMergeGame {
     this.eeveeCaught -= 1
     this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
     this.frozen = true
-    this.pendingLevelAdvance = false
     this.callbacks.onCapstoneFormed(EEVEE_FAMILY_ID, '', '')
     return true
   }

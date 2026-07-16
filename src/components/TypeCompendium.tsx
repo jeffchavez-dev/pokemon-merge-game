@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { TYPE_IDS, typeLines, getCursor, isTypeComplete, FUSION_RECIPES, type Family } from '../data/families'
+import { TYPE_IDS, typeLines, getCursor, isTypeComplete, isTypeUnlocked, FUSION_RECIPES, type Family } from '../data/families'
 
 // Real-world species counts per type, sourced from Bulbapedia's per-type
 // pages (each counts a species once if it carries that type in any form,
@@ -47,6 +47,7 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
         speciesCount,
         cursor: getCursor(type),
         complete: isTypeComplete(type),
+        unlocked: isTypeUnlocked(type),
         real: REAL_WORLD_COUNT[type],
       }
     })
@@ -56,9 +57,12 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
   const totalSpecies = typeStats.reduce((sum, t) => sum + t.speciesCount, 0)
 
   const q = query.trim().toLowerCase()
-  function matchesQuery(type: string, lines: Family[]): boolean {
+  // Locked types only match by type name — species search shouldn't leak
+  // the names of Pokemon behind a type you haven't unlocked yet.
+  function matchesQuery(type: string, lines: Family[], unlocked: boolean): boolean {
     if (!q) return true
     if (type.includes(q)) return true
+    if (!unlocked) return false
     return lines.some((line) => line.tiles.some((t) => t.name.toLowerCase().includes(q)))
   }
 
@@ -170,37 +174,43 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
           <h3 className="mb-2 text-sm font-semibold text-slate-200">Roster, by type</h3>
           <div className="flex flex-col gap-2 pb-4">
             {typeStats
-              .filter((t) => matchesQuery(t.type, t.lines))
-              .map(({ type, lines, speciesCount, cursor, complete, real }) => {
-                const open = openTypes.has(type) || (q !== '' && !type.includes(q))
+              .filter((t) => matchesQuery(t.type, t.lines, t.unlocked))
+              .map(({ type, lines, speciesCount, cursor, complete, unlocked, real }) => {
+                const open = unlocked && (openTypes.has(type) || (q !== '' && !type.includes(q)))
                 const activeLine = lines[Math.min(cursor, lines.length - 1)]
                 const coveragePct = Math.min(100, (speciesCount / real) * 100)
                 return (
                   <div key={type} className="overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
                     <button
-                      onClick={() => toggle(type)}
-                      className="flex w-full items-center gap-2 border-l-4 px-3 py-2.5 text-left"
-                      style={{ borderLeftColor: activeLine?.color ?? '#94a3b8' }}
+                      onClick={() => unlocked && toggle(type)}
+                      className={`flex w-full items-center gap-2 border-l-4 px-3 py-2.5 text-left ${!unlocked ? 'opacity-40' : ''}`}
+                      style={{ borderLeftColor: unlocked ? (activeLine?.color ?? '#94a3b8') : '#475569' }}
                     >
                       <span
                         className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: activeLine?.color ?? '#94a3b8' }}
+                        style={{ backgroundColor: unlocked ? (activeLine?.color ?? '#94a3b8') : '#475569' }}
                       />
-                      <span className="flex-1 text-sm font-semibold">{label(type)}</span>
-                      {complete && (
+                      <span className="flex-1 text-sm font-semibold">{unlocked ? label(type) : '???'}</span>
+                      {unlocked && complete && (
                         <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
                           COMPLETE
                         </span>
                       )}
-                      <span className="text-xs text-slate-400">
-                        {lines.length} lines · {speciesCount} species
-                      </span>
-                      <span className={`text-xs text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+                      {unlocked ? (
+                        <span className="text-xs text-slate-400">
+                          {lines.length} lines · {speciesCount} species
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Not yet unlocked</span>
+                      )}
+                      {unlocked && (
+                        <span className={`text-xs text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+                      )}
                     </button>
                     <div className="h-1 bg-slate-800">
                       <div
                         className="h-full"
-                        style={{ width: `${coveragePct}%`, backgroundColor: activeLine?.color ?? '#94a3b8' }}
+                        style={{ width: unlocked ? `${coveragePct}%` : '0%', backgroundColor: activeLine?.color ?? '#94a3b8' }}
                       />
                     </div>
                     {open && (
