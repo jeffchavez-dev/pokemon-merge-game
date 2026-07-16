@@ -125,7 +125,6 @@ export default function Game() {
       },
     })
     gameRef.current = game
-    ;(window as unknown as { __game?: typeof game }).__game = game
     return () => game.destroy()
   }, [])
 
