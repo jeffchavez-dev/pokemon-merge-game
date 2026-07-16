@@ -33,10 +33,17 @@ export default function Game() {
   const [armedPower, setArmedPower] = useState<PowerId | null>(null)
   const [inDanger, setInDanger] = useState(false)
   const [discovered, setDiscovered] = useState<Set<string>>(new Set())
+  const [latestDiscovered, setLatestDiscovered] = useState<{ familyId: string; tier: number } | null>(null)
   const [infoOpen, setInfoOpen] = useState(false)
   const [compendiumOpen, setCompendiumOpen] = useState(false)
   const [activePowerIds, setActivePowerIds] = useState<PowerId[]>([POWERS[0].id])
-  const [capstoneInfo, setCapstoneInfo] = useState<{ familyId: string; aName: string; bName: string } | null>(null)
+  const [capstoneInfo, setCapstoneInfo] = useState<{
+    familyId: string
+    aName: string
+    bName: string
+    resultFamilyId: string
+    resultTier: number
+  } | null>(null)
   const [mergeToast, setMergeToast] = useState<string | null>(null)
   const [eeveeCaught, setEeveeCaught] = useState(0)
   const [eeveeBanner, setEeveeBanner] = useState(false)
@@ -79,10 +86,11 @@ export default function Game() {
       onDangerChange: setInDanger,
       onDiscovered: (fam, tier) => {
         setDiscovered((prev) => new Set(prev).add(`${fam}-${tier}`))
+        setLatestDiscovered({ familyId: fam, tier })
       },
       onActivePowersChange: setActivePowerIds,
-      onCapstoneFormed: (fam, aName, bName) => {
-        setCapstoneInfo({ familyId: fam, aName, bName })
+      onCapstoneFormed: (fam, aName, bName, resultFamilyId, resultTier) => {
+        setCapstoneInfo({ familyId: fam, aName, bName, resultFamilyId, resultTier })
       },
       onFusionFormed: (boostedType, speciesName) => {
         setFusionToast(`Fusion! ${boostedType[0].toUpperCase()}${boostedType.slice(1)} surges ahead — ${speciesName}!`)
@@ -117,6 +125,7 @@ export default function Game() {
       },
     })
     gameRef.current = game
+    ;(window as unknown as { __game?: typeof game }).__game = game
     return () => game.destroy()
   }, [])
 
@@ -295,6 +304,7 @@ export default function Game() {
           unlockedTypes={unlockedTypes}
           armedPower={armedPower}
           discovered={discovered}
+          latestDiscovered={latestDiscovered}
           onClose={() => setInfoOpen(false)}
         />
       )}
@@ -306,6 +316,8 @@ export default function Game() {
           familyId={capstoneInfo.familyId}
           aName={capstoneInfo.aName}
           bName={capstoneInfo.bName}
+          resultFamilyId={capstoneInfo.resultFamilyId}
+          resultTier={capstoneInfo.resultTier}
           activePowerIds={activePowerIds}
           charges={powerCharges}
           onChoose={handleChoosePower}
@@ -468,15 +480,18 @@ function InfoOverlay({
   unlockedTypes,
   armedPower,
   discovered,
+  latestDiscovered,
   onClose,
 }: {
   unlockedTypes: string[]
   armedPower: PowerId | null
   discovered: Set<string>
+  latestDiscovered: { familyId: string; tier: number } | null
   onClose: () => void
 }) {
   const totalDiscovered = discovered.size
   const totalTiles = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
+  const latestTile = latestDiscovered ? getTile(latestDiscovered.familyId, latestDiscovered.tier) : null
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-950/97 backdrop-blur-sm" onClick={onClose}>
@@ -528,11 +543,21 @@ function InfoOverlay({
             : 'Drag to aim, release to drop. Merge two of the same Pokemon to evolve them.'}
         </p>
 
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-200">Discovered</h3>
-          <span className="text-xs text-slate-500">
-            {totalDiscovered} / {totalTiles}
-          </span>
+        <div>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-200">Discovered</h3>
+            <span className="text-xs text-slate-500">
+              {totalDiscovered} / {totalTiles}
+            </span>
+          </div>
+          {latestTile && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <img src={latestTile.sprite} alt={latestTile.name} className="h-8 w-8 object-contain" />
+              <span className="text-xs text-slate-400">
+                Newest: <span className="font-medium text-slate-200">{latestTile.name}</span>
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-4 gap-2 pb-4 sm:grid-cols-6">
@@ -566,6 +591,8 @@ function CapstonePowerModal({
   familyId,
   aName,
   bName,
+  resultFamilyId,
+  resultTier,
   activePowerIds,
   charges,
   onChoose,
@@ -573,23 +600,41 @@ function CapstonePowerModal({
   familyId: string
   aName: string
   bName: string
+  resultFamilyId: string
+  resultTier: number
   activePowerIds: PowerId[]
   charges: Record<PowerId, number>
   onChoose: (id: PowerId) => void
 }) {
   const isEeveeTrade = familyId === EEVEE_FAMILY_ID
   const capstone = isEeveeTrade ? getTile(EEVEE_FAMILY_ID, 0) : getTile(familyId, finalTier(getFamily(familyId)))
+  // The progression is fixed and deterministic now, so show exactly what
+  // this hands off to instead of leaving the player to go find out — only
+  // relevant when there's an actual hand-off to a different species (not
+  // the type's own true-final tier-up, which has nothing further to show).
+  const resultTile = isEeveeTrade ? capstone : getTile(resultFamilyId, resultTier)
+  const hasHandoff = !isEeveeTrade && resultTile.id !== capstone.id
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">
-      <img src={capstone.sprite} alt={capstone.name} className="h-20 w-20 object-contain" />
+      <div className="flex items-center gap-3">
+        <img src={capstone.sprite} alt={capstone.name} className="h-20 w-20 object-contain" />
+        {hasHandoff && (
+          <>
+            <span className="text-2xl text-slate-500" aria-hidden>
+              →
+            </span>
+            <img src={resultTile.sprite} alt={resultTile.name} className="h-20 w-20 object-contain" />
+          </>
+        )}
+      </div>
       <div className="text-center">
         <div className="text-lg font-bold text-yellow-300">
           {isEeveeTrade ? 'Traded an Eevee!' : `${capstone.name} discovered!`}
         </div>
         {!isEeveeTrade && (
           <div className="text-xs text-slate-500">
-            {aName} + {bName} → hands the line off
+            {aName} + {bName} → {hasHandoff ? `hands off to ${resultTile.name}` : 'hands the line off'}
           </div>
         )}
         <div className="text-sm text-slate-400">Choose a power to boost:</div>

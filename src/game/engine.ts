@@ -210,7 +210,13 @@ export interface GameCallbacks {
   onDangerChange: (inDanger: boolean) => void
   onDiscovered: (familyId: string, tier: number) => void
   onActivePowersChange: (ids: PowerId[]) => void
-  onCapstoneFormed: (familyId: string, aName: string, bName: string) => void
+  onCapstoneFormed: (
+    familyId: string,
+    aName: string,
+    bName: string,
+    resultFamilyId: string,
+    resultTier: number,
+  ) => void
   onFusionFormed: (boostedType: string, speciesName: string) => void
   onMergeFormed: (info: { aName: string; bName: string; resultName: string; type: string; kind: 'tierUp' | 'lineFinal' | 'handoff' }) => void
   onEeveeCaughtChange: (count: number) => void
@@ -1474,7 +1480,7 @@ export class PokemonMergeGame {
 
     if (isHandoff || justCompletedType) {
       this.callbacks.onMergeFormed({ aName, bName, resultName: tile.name, type, kind: 'handoff' })
-      this.beginLineComplete(pa.familyId, aName, bName, midX, midY)
+      this.beginLineComplete(pa.familyId, aName, bName, midX, midY, tile.familyId, tile.tier)
       return true
     }
     this.callbacks.onMergeFormed({
@@ -1491,14 +1497,22 @@ export class PokemonMergeGame {
   // choice now — there's no more single "current level" to gate it behind,
   // since every unlocked type is equally something the player is actively
   // pursuing at once.
-  private beginLineComplete(completedLineId: string, aName: string, bName: string, x: number, y: number) {
+  private beginLineComplete(
+    completedLineId: string,
+    aName: string,
+    bName: string,
+    x: number,
+    y: number,
+    resultFamilyId: string,
+    resultTier: number,
+  ) {
     this.frozen = true
     this.celebration = { x, y, t: 0, duration: CELEBRATION_MS, familyId: completedLineId }
     this.spawnCelebrationEffect(completedLineId, x, y)
     setTimeout(() => {
       this.celebration = null
     }, CELEBRATION_MS)
-    this.callbacks.onCapstoneFormed(completedLineId, aName, bName)
+    this.callbacks.onCapstoneFormed(completedLineId, aName, bName, resultFamilyId, resultTier)
   }
 
   // Resolves a line-complete bonus choice: unlocks the power if it isn't
@@ -1768,7 +1782,7 @@ export class PokemonMergeGame {
     this.eeveeCaught -= 1
     this.callbacks.onEeveeCaughtChange(this.eeveeCaught)
     this.frozen = true
-    this.callbacks.onCapstoneFormed(EEVEE_FAMILY_ID, '', '')
+    this.callbacks.onCapstoneFormed(EEVEE_FAMILY_ID, '', '', EEVEE_FAMILY_ID, 0)
     return true
   }
 
