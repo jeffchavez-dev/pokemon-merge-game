@@ -5,6 +5,7 @@ import { POWERS, type PowerId } from '../data/powers'
 import TypeCompendium from './TypeCompendium'
 
 const BEST_SCORE_KEY = 'pokemon-merge-best-score'
+const TOTAL_TILES = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
 
 function loadBestScore(): number {
   try {
@@ -194,6 +195,18 @@ export default function Game() {
             >
               ⓘ
             </button>
+            <button
+              onClick={() => {
+                if (window.confirm('Restart the game? This clears your current board and score.')) {
+                  handleRestartGame()
+                }
+              }}
+              aria-label="Restart game"
+              title="Restart game"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+            >
+              ↻
+            </button>
           </div>
         </div>
 
@@ -201,6 +214,7 @@ export default function Game() {
           score={score}
           bestScore={bestScore}
           unlockedTypes={unlockedTypes}
+          discoveredCount={discovered.size}
           nowTile={nowTile}
           nextTile={nextTile}
           powers={activePowers}
@@ -343,6 +357,7 @@ function HeaderBar({
   score,
   bestScore,
   unlockedTypes,
+  discoveredCount,
   nowTile,
   nextTile,
   powers,
@@ -356,6 +371,7 @@ function HeaderBar({
   score: number
   bestScore: number
   unlockedTypes: string[]
+  discoveredCount: number
   nowTile: ReturnType<typeof getTile>
   nextTile: ReturnType<typeof getTile>
   powers: typeof POWERS
@@ -376,6 +392,7 @@ function HeaderBar({
         <Stat label="Score" value={score} />
         <Stat label="Best" value={bestScore} />
         <Stat label="Types" value={`${unlockedTypes.length}/${TYPE_IDS.length}`} />
+        <Stat label="Seen" value={`${discoveredCount}/${TOTAL_TILES}`} />
       </div>
 
       <Divider />
@@ -489,7 +506,7 @@ function InfoOverlay({
   onClose: () => void
 }) {
   const totalDiscovered = discovered.size
-  const totalTiles = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
+  const totalTiles = TOTAL_TILES
   const latestTile = latestDiscovered ? getTile(latestDiscovered.familyId, latestDiscovered.tier) : null
 
   return (
