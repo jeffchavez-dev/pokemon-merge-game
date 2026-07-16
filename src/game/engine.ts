@@ -491,9 +491,9 @@ export class PokemonMergeGame {
     for (const b of saved.bodies) {
       const tile = getTile(b.familyId, b.tier)
       const body = Matter.Bodies.circle(b.x, b.y, this.radius(tile), {
-        restitution: 0.15,
-        friction: 0.2,
-        frictionAir: 0.0015,
+        restitution: 0.02,
+        friction: 0.35,
+        frictionAir: 0.006,
         density: 0.0015,
         render: {
           sprite: {
@@ -585,6 +585,7 @@ export class PokemonMergeGame {
       this.processPendingExplosions()
       this.processPendingFusions()
       this.processPendingMerges()
+      this.checkAdjacentMergeablePairs()
       this.updateExplodeCooldowns()
       this.updateParticles()
       this.updatePokeballThrows()
@@ -632,22 +633,48 @@ export class PokemonMergeGame {
     return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
   }
 
-  // justFormed pieces (the result of a merge, not a raw drop) skip the
-  // stale-line shrink entirely and get a small boost on top — so the thing
-  // you just evolved always reads as the big, noteworthy event on the
-  // board, regardless of how old its line is, while fresh drops of a
-  // decaying stale line stay visually small and easy to dismiss as clutter.
+  // A line's own final stage stays full-size for its first, celebrated
+  // appearance, but every later drop of that same already-discovered final
+  // form shrinks — the type's cursor can easily sit on this line for a long
+  // stretch of the game (it's still the active goal), during which its
+  // final form keeps dropping at full, most-eye-catching size even though
+  // the player has long since seen it, cluttering the board with duplicate
+  // Raichus/Typhlosions/etc. that have nothing left to say.
+  private static readonly REPEAT_FINAL_SHRINK = 0.65
+
+  // justFormed pieces (the result of a merge, not a raw drop) skip both
+  // shrinks entirely and get a small boost on top — so the thing you just
+  // evolved always reads as the big, noteworthy event on the board,
+  // regardless of how old its line is or whether it's a repeat final form.
   private radius(tile: Tile, justFormed = false): number {
-    const multiplier = justFormed ? 1.15 : this.familySizeMultiplier(tile.familyId)
+    if (justFormed) return tile.radius * this.scale * 1.15
+    let multiplier = this.familySizeMultiplier(tile.familyId)
+    const family = getFamily(tile.familyId)
+    if (tile.tier === finalTier(family) && this.discovered.has(tile.id)) {
+      multiplier *= PokemonMergeGame.REPEAT_FINAL_SHRINK
+    }
     return tile.radius * this.scale * multiplier
   }
+
+  // A rectangle's short axis always has some slack once its long axis is
+  // scaled to touch a circle — the only way to remove it entirely is to
+  // either stretch the artwork (distorts it) or let the long axis overflow
+  // past the circle (bleeds into neighbors). 1.08 buys back a bit more of
+  // that short-axis slack in exchange for a small, mostly-invisible overflow
+  // at the long axis's tips (typically a thin ear/tail, not the character's
+  // mass) — tuned to stay well short of the ~15% overflow that made tall,
+  // narrow action poses (Cinderace) visibly spill into neighboring pieces.
+  private static readonly OVERFLOW_TOLERANCE = 1.08
 
   // Dividing by spriteFill scales each sprite up until its OWN visible
   // artwork — not the padded 475x475 canvas — reaches the edge of its
   // circle, so species with a lot of native padding stop floating with a
   // visible gap around them while tightly-drawn ones are unaffected.
   private spriteScale(tile: Tile, justFormed = false): number {
-    return (this.radius(tile, justFormed) * 2) / (tile.spriteSize * tile.spriteFill)
+    return (
+      (this.radius(tile, justFormed) * 2 * PokemonMergeGame.OVERFLOW_TOLERANCE) /
+      (tile.spriteSize * tile.spriteFill)
+    )
   }
 
   // Picks uniformly among every currently unlocked type's own active line.
@@ -800,10 +827,16 @@ export class PokemonMergeGame {
     ctx.restore()
   }
 
-  // A colored ring around every piece that currently has a live mergeable
-  // partner on the board — that line's own color for a normal same-line-
-  // same-tier match, amber for a pair that's Type Complete on both sides
-  // (fuses into a rarer type, or explodes if no recipe connects them).
+  // A small pulsing dot centered on every piece that currently has a live
+  // mergeable partner on the board — that line's own color for a normal
+  // same-line-same-tier match, amber for a pair that's Type Complete on both
+  // sides (fuses into a rarer type, or explodes if no recipe connects them).
+  // A ring traced at the piece's own circleRadius used to do this job, but
+  // that radius is deliberately bigger than most sprites' actual artwork
+  // (see spriteFill), so the ring read as a halo of dead space around the
+  // piece rather than a mergeability signal. A dot has no footprint, so it
+  // can't create that illusion regardless of how tightly any given sprite
+  // fills its circle.
   private drawMergeIndicators() {
     const ctx = this.render.context
     const now = this.engine.timing.timestamp
@@ -828,19 +861,15 @@ export class PokemonMergeGame {
       groups.set(key, list)
     }
 
-    // Hugs the piece closely (a small 1.04x pad plus a thin stroke) rather
-    // than a wide halo — a loose ring around every mergeable piece reads as
-    // dead space between pieces that are actually sitting right next to
-    // each other.
-    const drawRing = (body: Matter.Body, color: string) => {
+    const drawDot = (body: Matter.Body, color: string) => {
       const r = body.circleRadius ?? 30
+      const dotRadius = Math.max(3 * this.scale, r * 0.14) * (0.85 + 0.3 * pulse)
       ctx.save()
-      ctx.globalAlpha = 0.5 + 0.4 * pulse
-      ctx.strokeStyle = color
-      ctx.lineWidth = 1.5 * this.scale
+      ctx.globalAlpha = 0.75 + 0.25 * pulse
+      ctx.fillStyle = color
       ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, r * 1.04, 0, Math.PI * 2)
-      ctx.stroke()
+      ctx.arc(body.position.x, body.position.y, dotRadius, 0, Math.PI * 2)
+      ctx.fill()
       ctx.restore()
     }
 
@@ -848,11 +877,11 @@ export class PokemonMergeGame {
       if (list.length < 2) continue
       const familyId = key.split(':')[0]
       const color = getFamily(familyId).color
-      for (const body of list) drawRing(body, color)
+      for (const body of list) drawDot(body, color)
     }
 
     if (capped.length >= 2) {
-      for (const body of capped) drawRing(body, '#fbbf24')
+      for (const body of capped) drawDot(body, '#fbbf24')
     }
   }
 
@@ -1100,13 +1129,22 @@ export class PokemonMergeGame {
     }
   }
 
+  // Measured live: right after a burst of drops (i.e. how the board actually
+  // looks during real play, not artificially settled), most pieces showed
+  // 3-32px gaps to their nearest neighbor, tightly correlated with still
+  // having real velocity (8-23) — they hadn't finished bouncing yet.
+  // restitution 0.15 gave every landing a noticeable bounce, and with many
+  // pieces touching at once each bounce re-triggers its neighbors', so a
+  // busy board rarely finishes settling before the next drop arrives.
+  // Dropping restitution near zero and raising friction/frictionAir shortens
+  // that bounce-and-resettle window so contact reads as solid sooner.
   drop() {
     if (this.gameOver || this.frozen || !this.canDrop) return
     const tile = getTile(this.dropFamilyId, this.dropTier)
     const body = Matter.Bodies.circle(this.aimX, this.dropY, this.radius(tile), {
-      restitution: 0.15,
-      friction: 0.2,
-      frictionAir: 0.0015,
+      restitution: 0.02,
+      friction: 0.35,
+      frictionAir: 0.006,
       density: 0.0015,
       render: {
         sprite: {
@@ -1194,6 +1232,35 @@ export class PokemonMergeGame {
     this.pendingMerges.push([a, b])
   }
 
+  // Matter's collisionStart only fires once, the instant two bodies first
+  // touch — if that moment lands during a frozen celebration pause (or any
+  // other reason handleCollision declines), it never fires again while they
+  // stay in resting contact, leaving them stuck touching but permanently
+  // unable to merge. This sweep re-checks actual proximity every frame so a
+  // missed pair always gets retried once nothing's blocking it anymore.
+  private checkAdjacentMergeablePairs() {
+    if (this.frozen) return
+    const bodies = this.dynamicBodies()
+    for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]
+      const pa = pluginOf(a)
+      if (!pa || pa.merging) continue
+      for (let j = i + 1; j < bodies.length; j++) {
+        const b = bodies[j]
+        const pb = pluginOf(b)
+        if (!pb || pb.merging) continue
+        const dist = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y)
+        const touchDist = (a.circleRadius ?? 0) + (b.circleRadius ?? 0)
+        // handleCollision itself decides whether this pair actually qualifies
+        // (same line + tier, or both capped-complete for a fusion/explosion)
+        // — this sweep's only job is finding pairs that are touching.
+        if (dist <= touchDist * 1.02) {
+          this.handleCollision(a, b)
+        }
+      }
+    }
+  }
+
   private processPendingMerges() {
     if (this.pendingMerges.length === 0 || this.frozen) return
     const merges = this.pendingMerges
@@ -1244,9 +1311,9 @@ export class PokemonMergeGame {
     const tile = getTile(currentLine(boostType).id, 0)
 
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile, true), {
-      restitution: 0.15,
-      friction: 0.2,
-      frictionAir: 0.0015,
+      restitution: 0.02,
+      friction: 0.35,
+      frictionAir: 0.006,
       density: 0.0015,
       render: {
         sprite: {
@@ -1478,9 +1545,9 @@ export class PokemonMergeGame {
 
     this.spawnMergeEffect(tile.familyId, midX, midY)
     const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile, true), {
-      restitution: 0.15,
-      friction: 0.2,
-      frictionAir: 0.0015,
+      restitution: 0.02,
+      friction: 0.35,
+      frictionAir: 0.006,
       density: 0.0015,
       render: {
         sprite: {

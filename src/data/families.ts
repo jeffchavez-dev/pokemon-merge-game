@@ -27,10 +27,16 @@ export type Family = {
   tiles: Tile[]
 }
 
-// Tier 2 used to be 90 — on a ~450px-wide board that's a ~212px circle,
-// nearly half the board width for one piece, which made every fully-evolved
-// Pokemon dominate the screen and crowd out everything around it.
-const TIER_RADII = [26, 46, 72]
+// Tier 2 used to be 90, then 72 — even at 72, a tier-2 piece's circle is
+// still ~2.8x a tier-0 neighbor's radius (nearly 8x the area), so a single
+// small piece resting against it only ever touches at one point, leaving
+// most of the big circle's own perimeter unoccupied. That reads as "empty
+// space around it" even though nothing is actually wrong physically — it's
+// an inherent property of circle-packing sizes that are far apart, not a
+// sprite-fit issue (see spriteFill, which handles the OTHER kind of gap —
+// how well a piece's own art fills its own circle). Narrowing the size
+// ratio between tiers is the only lever that actually shrinks this.
+const TIER_RADII = [26, 46, 58]
 const TIER_SCORE = [1, 4, 14]
 
 // A line's own final tier — the last real stage, whatever the line's length.

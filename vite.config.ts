@@ -9,6 +9,15 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Without these, a new deploy's service worker installs but stays
+      // "waiting" until every tab for the site is closed — a plain reload
+      // keeps serving the old cached JS/CSS from the outgoing worker, which
+      // is why fixes can appear on a fresh preview URL but not on the
+      // stable domain until you close all its tabs.
+      workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+      },
       manifest: {
         name: 'Pokemon Merge',
         short_name: 'Pokemon',
