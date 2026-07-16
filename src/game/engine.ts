@@ -623,12 +623,18 @@ export class PokemonMergeGame {
     return Math.max(minMultiplier, 1 - distanceBack * shrinkPerStep)
   }
 
-  private radius(tile: Tile): number {
-    return tile.radius * this.scale * this.familySizeMultiplier(tile.familyId)
+  // justFormed pieces (the result of a merge, not a raw drop) skip the
+  // stale-line shrink entirely and get a small boost on top — so the thing
+  // you just evolved always reads as the big, noteworthy event on the
+  // board, regardless of how old its line is, while fresh drops of a
+  // decaying stale line stay visually small and easy to dismiss as clutter.
+  private radius(tile: Tile, justFormed = false): number {
+    const multiplier = justFormed ? 1.15 : this.familySizeMultiplier(tile.familyId)
+    return tile.radius * this.scale * multiplier
   }
 
-  private spriteScale(tile: Tile): number {
-    return (this.radius(tile) * 2) / tile.spriteSize
+  private spriteScale(tile: Tile, justFormed = false): number {
+    return (this.radius(tile, justFormed) * 2) / tile.spriteSize
   }
 
   // Picks uniformly among every currently unlocked type's own active line.
@@ -654,6 +660,9 @@ export class PokemonMergeGame {
   // there would skip most of the grind toward that line's own progress.
   private rollDropTier(familyId: string): 0 | 1 {
     if (familyId === currentLine(typeOf(familyId)).id) return 0
+    // Single-stage lines (e.g. Dedenne) have no tier 1 tile at all — rolling
+    // one for them would crash the very next lookup.
+    if (getFamily(familyId).tiles.length < 2) return 0
     const evolvedChance = Math.min(0.3, this.handoffCount * 0.01)
     return Math.random() < evolvedChance ? 1 : 0
   }
@@ -806,14 +815,18 @@ export class PokemonMergeGame {
       groups.set(key, list)
     }
 
+    // Hugs the piece closely (a small 1.04x pad plus a thin stroke) rather
+    // than a wide halo — a loose ring around every mergeable piece reads as
+    // dead space between pieces that are actually sitting right next to
+    // each other.
     const drawRing = (body: Matter.Body, color: string) => {
       const r = body.circleRadius ?? 30
       ctx.save()
       ctx.globalAlpha = 0.5 + 0.4 * pulse
       ctx.strokeStyle = color
-      ctx.lineWidth = 2.5 * this.scale
+      ctx.lineWidth = 1.5 * this.scale
       ctx.beginPath()
-      ctx.arc(body.position.x, body.position.y, r * 1.14, 0, Math.PI * 2)
+      ctx.arc(body.position.x, body.position.y, r * 1.04, 0, Math.PI * 2)
       ctx.stroke()
       ctx.restore()
     }
@@ -1217,7 +1230,7 @@ export class PokemonMergeGame {
     this.onHandoff()
     const tile = getTile(currentLine(boostType).id, 0)
 
-    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
+    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile, true), {
       restitution: 0.15,
       friction: 0.2,
       frictionAir: 0.0015,
@@ -1225,8 +1238,8 @@ export class PokemonMergeGame {
       render: {
         sprite: {
           texture: tile.sprite,
-          xScale: this.spriteScale(tile),
-          yScale: this.spriteScale(tile),
+          xScale: this.spriteScale(tile, true),
+          yScale: this.spriteScale(tile, true),
         },
       },
     })
@@ -1451,7 +1464,7 @@ export class PokemonMergeGame {
     const justCompletedType = isAbsoluteFinal && !this.discovered.has(tile.id)
 
     this.spawnMergeEffect(tile.familyId, midX, midY)
-    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile), {
+    const newBody = Matter.Bodies.circle(midX, midY, this.radius(tile, true), {
       restitution: 0.15,
       friction: 0.2,
       frictionAir: 0.0015,
@@ -1459,8 +1472,8 @@ export class PokemonMergeGame {
       render: {
         sprite: {
           texture: tile.sprite,
-          xScale: this.spriteScale(tile),
-          yScale: this.spriteScale(tile),
+          xScale: this.spriteScale(tile, true),
+          yScale: this.spriteScale(tile, true),
         },
       },
     })
