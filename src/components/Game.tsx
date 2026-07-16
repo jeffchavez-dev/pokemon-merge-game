@@ -5,6 +5,7 @@ import { POWERS, type PowerId } from '../data/powers'
 import TypeCompendium from './TypeCompendium'
 
 const BEST_SCORE_KEY = 'pokemon-merge-best-score'
+const THEME_KEY = 'pokemon-merge-theme'
 const TOTAL_TILES = FAMILIES.reduce((sum, f) => sum + f.tiles.length, 0)
 
 function loadBestScore(): number {
@@ -15,6 +16,16 @@ function loadBestScore(): number {
   }
 }
 
+function loadTheme(): 'light' | 'dark' {
+  try {
+    const saved = localStorage.getItem(THEME_KEY)
+    if (saved === 'light' || saved === 'dark') return saved
+  } catch {
+    // ignore — fall through to system preference
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
 export default function Game() {
   const containerRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<PokemonMergeGame | null>(null)
@@ -22,6 +33,7 @@ export default function Game() {
 
   const [score, setScore] = useState(0)
   const [bestScore, setBestScore] = useState(loadBestScore)
+  const [theme, setTheme] = useState<'light' | 'dark'>(loadTheme)
   const [unlockedTypes, setUnlockedTypes] = useState<string[]>([])
   const [dropFamilyId, setDropFamilyId] = useState(FAMILIES[0].id)
   const [dropTier, setDropTier] = useState(0)
@@ -58,6 +70,15 @@ export default function Game() {
     setMergeToast(text)
     mergeToastTimeoutRef.current = setTimeout(() => setMergeToast(null), duration)
   }
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    try {
+      localStorage.setItem(THEME_KEY, theme)
+    } catch {
+      // ignore — theme just won't persist this session
+    }
+  }, [theme])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -174,24 +195,35 @@ export default function Game() {
   const dropFamily = getFamily(dropFamilyId)
   const activePowers = POWERS.filter((p) => activePowerIds.includes(p.id))
 
+  const iconButtonClass =
+    'flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 bg-white text-sm text-slate-600 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+
   return (
-    <div className="flex h-dvh w-full flex-col overflow-hidden bg-slate-950 text-slate-100">
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="mx-auto flex h-full w-full max-w-[480px] flex-1 flex-col gap-2 px-2 pt-2 pb-2">
         <div className="flex items-center justify-between px-1">
           <h1 className="text-base font-bold tracking-tight">Pokemon Merge</h1>
           <div className="flex items-center gap-1.5">
             <button
+              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className={iconButtonClass}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+            <button
               onClick={() => setCompendiumOpen(true)}
               aria-label="Type Compendium"
               title="Type Compendium"
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+              className={iconButtonClass}
             >
               📘
             </button>
             <button
               onClick={() => setInfoOpen(true)}
               aria-label="Info and progress"
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+              className={iconButtonClass}
             >
               ⓘ
             </button>
@@ -203,7 +235,7 @@ export default function Game() {
               }}
               aria-label="Restart game"
               title="Restart game"
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm text-slate-300 active:scale-95"
+              className={iconButtonClass}
             >
               ↻
             </button>
@@ -228,7 +260,7 @@ export default function Game() {
 
         <div className="relative min-h-0 flex-1">
           <div
-            className="absolute inset-0 overflow-hidden rounded-2xl bg-slate-900 transition-colors duration-500"
+            className="absolute inset-0 overflow-hidden rounded-2xl bg-slate-100 transition-colors duration-500 dark:bg-slate-900"
             style={{ backgroundColor: `${dropFamily.color}1a` }}
           >
             <div
@@ -290,20 +322,20 @@ export default function Game() {
             onPointerUp={handlePointerUp}
             onPointerDown={handlePointerMove}
             className={`game-board absolute inset-0 touch-none overflow-hidden rounded-2xl border-2 shadow-2xl transition-colors ${
-              armedPower ? 'border-yellow-400' : 'border-slate-700'
+              armedPower ? 'border-yellow-400' : 'border-slate-300 dark:border-slate-700'
             }`}
           >
             {isGameOver && (
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-slate-950/85 backdrop-blur-sm">
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white/85 backdrop-blur-sm dark:bg-slate-950/85">
                 <div className="text-xl font-bold">Game Over</div>
-                <div className="text-slate-300">Score: {score}</div>
+                <div className="text-slate-600 dark:text-slate-300">Score: {score}</div>
                 <button
                   onClick={handleRetryLevel}
                   className="rounded-lg bg-yellow-400 px-5 py-2 font-semibold text-slate-900 active:scale-95"
                 >
                   Retry
                 </button>
-                <button onClick={handleRestartGame} className="text-xs text-slate-400 underline">
+                <button onClick={handleRestartGame} className="text-xs text-slate-500 underline dark:text-slate-400">
                   Restart Game
                 </button>
               </div>
@@ -343,14 +375,14 @@ export default function Game() {
 function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex flex-col items-center leading-none">
-      <span className="text-[9px] text-slate-400">{label}</span>
+      <span className="text-[9px] text-slate-500 dark:text-slate-400">{label}</span>
       <span className="text-sm font-bold">{value}</span>
     </div>
   )
 }
 
 function Divider() {
-  return <div className="h-6 w-px shrink-0 bg-slate-700" />
+  return <div className="h-6 w-px shrink-0 bg-slate-300 dark:bg-slate-700" />
 }
 
 function HeaderBar({
@@ -384,8 +416,10 @@ function HeaderBar({
 }) {
   return (
     <div
-      className={`flex w-full shrink-0 flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-lg px-2 py-2 transition-shadow ${
-        inDanger ? 'bg-red-950/40 shadow-[0_0_0_2px_rgba(248,113,113,0.6)] animate-pulse' : 'bg-slate-800'
+      className={`flex w-full shrink-0 flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-lg border px-2 py-2 transition-shadow ${
+        inDanger
+          ? 'border-red-300 bg-red-100 shadow-[0_0_0_2px_rgba(248,113,113,0.6)] animate-pulse dark:border-transparent dark:bg-red-950/40'
+          : 'border-slate-200 bg-white dark:border-transparent dark:bg-slate-800'
       }`}
     >
       <div className="flex items-center gap-1.5">
@@ -427,14 +461,14 @@ function HeaderBar({
               title={power.description}
               className={`relative flex h-9 w-9 flex-col items-center justify-center rounded-full border text-base transition-transform ${
                 disabled
-                  ? 'border-slate-700 bg-slate-900 opacity-30'
+                  ? 'border-slate-300 bg-slate-100 opacity-30 dark:border-slate-700 dark:bg-slate-900'
                   : armed
-                    ? 'border-yellow-300 bg-yellow-400/20 scale-110'
-                    : 'border-slate-500 bg-slate-700 active:scale-95'
+                    ? 'border-yellow-500 bg-yellow-400/20 scale-110 dark:border-yellow-300'
+                    : 'border-slate-400 bg-slate-100 active:scale-95 dark:border-slate-500 dark:bg-slate-700'
               }`}
             >
               {power.id === 'pokeball' ? <PokeballIcon /> : power.icon}
-              <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[9px] font-semibold text-slate-200">
+              <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-700 px-1 text-[9px] font-semibold text-white dark:bg-slate-950 dark:text-slate-200">
                 {count}
               </span>
             </button>
@@ -447,12 +481,12 @@ function HeaderBar({
           title="Trade a caught Eevee for a bonus power"
           className={`relative flex h-9 w-9 flex-col items-center justify-center rounded-full border transition-transform ${
             eeveeCaught <= 0
-              ? 'border-slate-700 bg-slate-900 opacity-30'
-              : 'border-amber-300 bg-amber-400/20 active:scale-95'
+              ? 'border-slate-300 bg-slate-100 opacity-30 dark:border-slate-700 dark:bg-slate-900'
+              : 'border-amber-500 bg-amber-400/20 active:scale-95 dark:border-amber-300'
           }`}
         >
           <img src={getTile(EEVEE_FAMILY_ID, 0).sprite} alt="Eevee" className="h-6 w-6 object-contain" />
-          <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-950 px-1 text-[9px] font-semibold text-slate-200">
+          <span className="absolute -bottom-1 -right-1 rounded-full bg-slate-700 px-1 text-[9px] font-semibold text-white dark:bg-slate-950 dark:text-slate-200">
             {eeveeCaught}
           </span>
         </button>
@@ -510,7 +544,10 @@ function InfoOverlay({
   const latestTile = latestDiscovered ? getTile(latestDiscovered.familyId, latestDiscovered.tier) : null
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-slate-950/97 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 flex flex-col bg-white/97 backdrop-blur-sm dark:bg-slate-950/97"
+      onClick={onClose}
+    >
       <div
         className="mx-auto flex h-full w-full max-w-[480px] flex-col gap-4 overflow-y-auto px-4 py-4"
         onClick={(e) => e.stopPropagation()}
@@ -520,13 +557,13 @@ function InfoOverlay({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
           >
             ✕
           </button>
         </div>
 
-        <div className="text-sm text-slate-400">
+        <div className="text-sm text-slate-500 dark:text-slate-400">
           {unlockedTypes.length} of {TYPE_IDS.length} types unlocked
         </div>
 
@@ -539,7 +576,9 @@ function InfoOverlay({
               <div
                 key={type}
                 className={`flex items-center gap-1 rounded-full border px-2 py-1 text-xs transition-opacity ${
-                  unlocked ? 'border-slate-600 opacity-100' : 'border-slate-800 opacity-30'
+                  unlocked
+                    ? 'border-slate-300 opacity-100 dark:border-slate-600'
+                    : 'border-slate-200 opacity-30 dark:border-slate-800'
                 }`}
                 style={{ backgroundColor: unlocked ? `${line.color}22` : undefined }}
               >
@@ -561,7 +600,7 @@ function InfoOverlay({
 
         <div>
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-200">Discovered</h3>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Discovered</h3>
             <span className="text-xs text-slate-500">
               {totalDiscovered} / {totalTiles}
             </span>
@@ -569,8 +608,9 @@ function InfoOverlay({
           {latestTile && (
             <div className="mt-1.5 flex items-center gap-2">
               <img src={latestTile.sprite} alt={latestTile.name} className="h-8 w-8 object-contain" />
-              <span className="text-xs text-slate-400">
-                Newest: <span className="font-medium text-slate-200">{latestTile.name}</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Newest:{' '}
+                <span className="font-medium text-slate-800 dark:text-slate-200">{latestTile.name}</span>
               </span>
             </div>
           )}
@@ -584,7 +624,7 @@ function InfoOverlay({
               return (
                 <div
                   key={key}
-                  className="flex flex-col items-center gap-1 rounded-lg bg-slate-900 px-1 py-2 text-center"
+                  className="flex flex-col items-center gap-1 rounded-lg bg-slate-100 px-1 py-2 text-center dark:bg-slate-900"
                 >
                   <img
                     src={tile.sprite}
@@ -592,7 +632,9 @@ function InfoOverlay({
                     className="h-10 w-10 object-contain"
                     style={found ? undefined : { filter: 'brightness(0) opacity(0.5)' }}
                   />
-                  <span className="text-[9px] leading-tight text-slate-400">{found ? tile.name : '???'}</span>
+                  <span className="text-[9px] leading-tight text-slate-500 dark:text-slate-400">
+                    {found ? tile.name : '???'}
+                  </span>
                 </div>
               )
             }),
@@ -632,12 +674,12 @@ function CapstonePowerModal({
   const hasHandoff = !isEeveeTrade && resultTile.id !== capstone.id
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950/92 px-6 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-white/92 px-6 backdrop-blur-sm dark:bg-slate-950/92">
       <div className="flex items-center gap-3">
         <img src={capstone.sprite} alt={capstone.name} className="h-20 w-20 object-contain" />
         {hasHandoff && (
           <>
-            <span className="text-2xl text-slate-500" aria-hidden>
+            <span className="text-2xl text-slate-400 dark:text-slate-500" aria-hidden>
               →
             </span>
             <img src={resultTile.sprite} alt={resultTile.name} className="h-20 w-20 object-contain" />
@@ -645,7 +687,7 @@ function CapstonePowerModal({
         )}
       </div>
       <div className="text-center">
-        <div className="text-lg font-bold text-yellow-300">
+        <div className="text-lg font-bold text-yellow-600 dark:text-yellow-300">
           {isEeveeTrade ? 'Traded an Eevee!' : `${capstone.name} discovered!`}
         </div>
         {!isEeveeTrade && (
@@ -653,7 +695,7 @@ function CapstonePowerModal({
             {aName} + {bName} → {hasHandoff ? `hands off to ${resultTile.name}` : 'hands the line off'}
           </div>
         )}
-        <div className="text-sm text-slate-400">Choose a power to boost:</div>
+        <div className="text-sm text-slate-500 dark:text-slate-400">Choose a power to boost:</div>
       </div>
 
       <div className="flex w-full max-w-xs flex-col gap-2">
@@ -663,18 +705,18 @@ function CapstonePowerModal({
             <button
               key={power.id}
               onClick={() => onChoose(power.id)}
-              className="flex items-center gap-3 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-left active:scale-95"
+              className="flex items-center gap-3 rounded-lg border border-slate-300 bg-white px-3 py-2 text-left active:scale-95 dark:border-slate-600 dark:bg-slate-800"
             >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-500 bg-slate-700 text-base">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-slate-400 bg-slate-100 text-base dark:border-slate-500 dark:bg-slate-700">
                 {power.id === 'pokeball' ? <PokeballIcon /> : power.icon}
               </span>
               <span className="flex-1">
-                <div className="text-sm font-semibold text-slate-100">{power.name}</div>
-                <div className="text-xs text-slate-400">{power.description}</div>
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{power.name}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">{power.description}</div>
               </span>
               <span
                 className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${
-                  isNew ? 'bg-yellow-400 text-slate-900' : 'bg-slate-700 text-slate-300'
+                  isNew ? 'bg-yellow-400 text-slate-900' : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
                 }`}
               >
                 {isNew ? 'NEW!' : `+1 (${charges[power.id] ?? 0})`}

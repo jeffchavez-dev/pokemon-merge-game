@@ -1,3 +1,5 @@
+import { spriteFill } from './spriteFill'
+
 // Every type is one continuous sequence of real evolution lines — merging
 // two same-type, same-tier pieces (regardless of which line they came from)
 // advances whichever line is currently active for that type. Reaching a
@@ -12,6 +14,7 @@ export type Tile = {
   radius: number
   sprite: string
   spriteSize: number
+  spriteFill: number
   scoreValue: number
 }
 
@@ -24,7 +27,10 @@ export type Family = {
   tiles: Tile[]
 }
 
-const TIER_RADII = [26, 46, 90]
+// Tier 2 used to be 90 — on a ~450px-wide board that's a ~212px circle,
+// nearly half the board width for one piece, which made every fully-evolved
+// Pokemon dominate the screen and crowd out everything around it.
+const TIER_RADII = [26, 46, 72]
 const TIER_SCORE = [1, 4, 14]
 
 // A line's own final tier — the last real stage, whatever the line's length.
@@ -54,6 +60,7 @@ function buildLine(id: string, name: string, color: string, dexIds: number[], st
     radius: TIER_RADII[tier],
     sprite: localSprite(dexIds[tier]),
     spriteSize: 475,
+    spriteFill: spriteFill(localSprite(dexIds[tier])),
     scoreValue: TIER_SCORE[tier],
   }))
   return { id, name, color, tiles }
@@ -433,15 +440,15 @@ export const ALL_DEX_IDS = Array.from(new Set(collectedDexIds))
 export const EEVEE_FAMILY_ID = 'eevee'
 
 export const EEVEELUTIONS: Tile[] = [
-  { id: 'eevee-0', name: 'Eevee', familyId: EEVEE_FAMILY_ID, tier: 0, radius: 46, sprite: localShinySprite(133), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-1', name: 'Vaporeon', familyId: EEVEE_FAMILY_ID, tier: 1, radius: 46, sprite: localShinySprite(134), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-2', name: 'Jolteon', familyId: EEVEE_FAMILY_ID, tier: 2, radius: 46, sprite: localShinySprite(135), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-3', name: 'Flareon', familyId: EEVEE_FAMILY_ID, tier: 3, radius: 46, sprite: localShinySprite(136), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-4', name: 'Espeon', familyId: EEVEE_FAMILY_ID, tier: 4, radius: 46, sprite: localShinySprite(196), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-5', name: 'Umbreon', familyId: EEVEE_FAMILY_ID, tier: 5, radius: 46, sprite: localShinySprite(197), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-6', name: 'Leafeon', familyId: EEVEE_FAMILY_ID, tier: 6, radius: 46, sprite: localShinySprite(470), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-7', name: 'Glaceon', familyId: EEVEE_FAMILY_ID, tier: 7, radius: 46, sprite: localShinySprite(471), spriteSize: 475, scoreValue: 20 },
-  { id: 'eevee-8', name: 'Sylveon', familyId: EEVEE_FAMILY_ID, tier: 8, radius: 46, sprite: localShinySprite(700), spriteSize: 475, scoreValue: 20 },
+  { id: 'eevee-0', name: 'Eevee', familyId: EEVEE_FAMILY_ID, tier: 0, radius: 46, sprite: localShinySprite(133), spriteSize: 475, spriteFill: spriteFill(localShinySprite(133)), scoreValue: 20 },
+  { id: 'eevee-1', name: 'Vaporeon', familyId: EEVEE_FAMILY_ID, tier: 1, radius: 46, sprite: localShinySprite(134), spriteSize: 475, spriteFill: spriteFill(localShinySprite(134)), scoreValue: 20 },
+  { id: 'eevee-2', name: 'Jolteon', familyId: EEVEE_FAMILY_ID, tier: 2, radius: 46, sprite: localShinySprite(135), spriteSize: 475, spriteFill: spriteFill(localShinySprite(135)), scoreValue: 20 },
+  { id: 'eevee-3', name: 'Flareon', familyId: EEVEE_FAMILY_ID, tier: 3, radius: 46, sprite: localShinySprite(136), spriteSize: 475, spriteFill: spriteFill(localShinySprite(136)), scoreValue: 20 },
+  { id: 'eevee-4', name: 'Espeon', familyId: EEVEE_FAMILY_ID, tier: 4, radius: 46, sprite: localShinySprite(196), spriteSize: 475, spriteFill: spriteFill(localShinySprite(196)), scoreValue: 20 },
+  { id: 'eevee-5', name: 'Umbreon', familyId: EEVEE_FAMILY_ID, tier: 5, radius: 46, sprite: localShinySprite(197), spriteSize: 475, spriteFill: spriteFill(localShinySprite(197)), scoreValue: 20 },
+  { id: 'eevee-6', name: 'Leafeon', familyId: EEVEE_FAMILY_ID, tier: 6, radius: 46, sprite: localShinySprite(470), spriteSize: 475, spriteFill: spriteFill(localShinySprite(470)), scoreValue: 20 },
+  { id: 'eevee-7', name: 'Glaceon', familyId: EEVEE_FAMILY_ID, tier: 7, radius: 46, sprite: localShinySprite(471), spriteSize: 475, spriteFill: spriteFill(localShinySprite(471)), scoreValue: 20 },
+  { id: 'eevee-8', name: 'Sylveon', familyId: EEVEE_FAMILY_ID, tier: 8, radius: 46, sprite: localShinySprite(700), spriteSize: 475, spriteFill: spriteFill(localShinySprite(700)), scoreValue: 20 },
 ]
 
 const EEVEE_PSEUDO_FAMILY: Family = {
@@ -479,6 +486,7 @@ export const MEW_TILE: Tile = {
   radius: 46,
   sprite: localShinySprite(151),
   spriteSize: 475,
+  spriteFill: spriteFill(localShinySprite(151)),
   scoreValue: 20,
 }
 

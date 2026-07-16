@@ -1,6 +1,15 @@
 @import "tailwindcss";
 
+/* Manual light/dark toggle: dark: classes apply based on a `dark` class on
+   an ancestor (set by Game.tsx from a persisted preference), rather than
+   purely following the OS's prefers-color-scheme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  color-scheme: light;
+}
+
+:root.dark {
   color-scheme: dark;
 }
 
@@ -11,8 +20,12 @@ html, body, #root {
 }
 
 body {
-  background: #0f172a;
+  background: #f8fafc;
   touch-action: none;
+}
+
+.dark body {
+  background: #0f172a;
 }
 
 /* Matter.js's canvas has no intrinsic CSS size — without this it renders

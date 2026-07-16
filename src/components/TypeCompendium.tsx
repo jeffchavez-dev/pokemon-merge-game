@@ -76,7 +76,10 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-slate-950/97 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 flex flex-col bg-white/97 backdrop-blur-sm dark:bg-slate-950/97"
+      onClick={onClose}
+    >
       <div
         className="mx-auto flex h-full w-full max-w-[480px] flex-col gap-4 overflow-y-auto px-4 py-4"
         onClick={(e) => e.stopPropagation()}
@@ -86,21 +89,21 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-600 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
           >
             ✕
           </button>
         </div>
 
-        <div className="flex gap-4 text-xs text-slate-400">
+        <div className="flex gap-4 text-xs text-slate-500 dark:text-slate-400">
           <div>
-            <span className="text-sm font-bold text-slate-100">{totalFamilies}</span> lines
+            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{totalFamilies}</span> lines
           </div>
           <div>
-            <span className="text-sm font-bold text-slate-100">{totalSpecies}</span> species
+            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{totalSpecies}</span> species
           </div>
           <div>
-            <span className="text-sm font-bold text-slate-100">{TYPE_IDS.length}</span> types
+            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{TYPE_IDS.length}</span> types
           </div>
         </div>
 
@@ -109,16 +112,18 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
           onChange={(e) => setQuery(e.target.value)}
           type="text"
           placeholder="Search a species or a type..."
-          className="rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 outline-none focus:border-yellow-400"
+          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none focus:border-yellow-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-yellow-400"
         />
 
         <div>
-          <h3 className="mb-2 text-sm font-semibold text-slate-200">Real-world type rarity, least to greatest</h3>
+          <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
+            Real-world type rarity, least to greatest
+          </h3>
           <p className="mb-2 text-xs text-slate-500">
             How many Pokemon species (any generation, any form) actually carry each type — the built-in scarcity the
             Fusion Ladder below chases.
           </p>
-          <div className="flex flex-col gap-1 rounded-xl border border-slate-700 bg-slate-900 p-3">
+          <div className="flex flex-col gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
             {RARITY_RANK.map((type) => {
               const count = REAL_WORLD_COUNT[type]
               const pct = (count / MAX_REAL_COUNT) * 100
@@ -128,7 +133,7 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                   <div className="text-right text-[11px] font-medium" style={{ color }}>
                     {label(type)}
                   </div>
-                  <div className="h-3 overflow-hidden rounded bg-slate-800">
+                  <div className="h-3 overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
                     <div className="h-full rounded" style={{ width: `${pct}%`, backgroundColor: color }} />
                   </div>
                   <div className="text-right text-[10px] text-slate-500">{count}</div>
@@ -139,7 +144,7 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-semibold text-slate-200">Fusion Ladder</h3>
+          <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">Fusion Ladder</h3>
           <p className="mb-2 text-xs text-slate-500">
             Once both sides are fully Type Complete (every line for that type discovered), colliding them accelerates
             a rarer type by one line instead of just exploding.
@@ -153,15 +158,21 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                 <div
                   key={i}
                   className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${
-                    ready ? 'border-emerald-500 bg-emerald-950/30' : 'border-slate-700 bg-slate-900'
+                    ready
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30'
+                      : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900'
                   }`}
                 >
                   <span className="flex items-center gap-1.5">
-                    <span className={aReady ? 'text-emerald-300' : 'text-slate-300'}>{label(recipe.a)}</span>
+                    <span className={aReady ? 'text-emerald-600 dark:text-emerald-300' : 'text-slate-600 dark:text-slate-300'}>
+                      {label(recipe.a)}
+                    </span>
                     <span className="text-slate-500">+</span>
-                    <span className={bReady ? 'text-emerald-300' : 'text-slate-300'}>{label(recipe.b)}</span>
+                    <span className={bReady ? 'text-emerald-600 dark:text-emerald-300' : 'text-slate-600 dark:text-slate-300'}>
+                      {label(recipe.b)}
+                    </span>
                     <span className="text-slate-500">→</span>
-                    <span className="font-semibold text-yellow-300">{label(recipe.boosts)}</span>
+                    <span className="font-semibold text-yellow-600 dark:text-yellow-300">{label(recipe.boosts)}</span>
                   </span>
                   <span className="text-[10px] text-slate-500">{recipe.note}</span>
                 </div>
@@ -171,7 +182,7 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-semibold text-slate-200">Roster, by type</h3>
+          <h3 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-200">Roster, by type</h3>
           <div className="flex flex-col gap-2 pb-4">
             {typeStats
               .filter((t) => matchesQuery(t.type, t.lines, t.unlocked))
@@ -180,7 +191,10 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                 const activeLine = lines[Math.min(cursor, lines.length - 1)]
                 const coveragePct = Math.min(100, (speciesCount / real) * 100)
                 return (
-                  <div key={type} className="overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
+                  <div
+                    key={type}
+                    className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                  >
                     <button
                       onClick={() => unlocked && toggle(type)}
                       className={`flex w-full items-center gap-2 border-l-4 px-3 py-2.5 text-left ${!unlocked ? 'opacity-40' : ''}`}
@@ -192,12 +206,12 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                       />
                       <span className="flex-1 text-sm font-semibold">{unlocked ? label(type) : '???'}</span>
                       {unlocked && complete && (
-                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
+                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-300">
                           COMPLETE
                         </span>
                       )}
                       {unlocked ? (
-                        <span className="text-xs text-slate-400">
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
                           {lines.length} lines · {speciesCount} species
                         </span>
                       ) : (
@@ -207,7 +221,7 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                         <span className={`text-xs text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
                       )}
                     </button>
-                    <div className="h-1 bg-slate-800">
+                    <div className="h-1 bg-slate-200 dark:bg-slate-800">
                       <div
                         className="h-full"
                         style={{ width: unlocked ? `${coveragePct}%` : '0%', backgroundColor: activeLine?.color ?? '#94a3b8' }}
@@ -216,9 +230,10 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                     {open && (
                       <div className="px-3 pt-2 pb-3">
                         <p className="mb-2 text-[11px] text-slate-500">
-                          <span className="font-semibold text-slate-300">{speciesCount}</span> of an estimated{' '}
-                          <span className="font-semibold text-slate-300">{real}</span> real {label(type)}-type Pokemon
-                          are in the game so far ({coveragePct.toFixed(0)}% coverage).
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">{speciesCount}</span> of
+                          an estimated{' '}
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">{real}</span> real{' '}
+                          {label(type)}-type Pokemon are in the game so far ({coveragePct.toFixed(0)}% coverage).
                         </p>
                         <div className="flex flex-col gap-1">
                           {lines.map((line, i) => {
@@ -228,16 +243,22 @@ export default function TypeCompendium({ onClose }: { onClose: () => void }) {
                               <div
                                 key={line.id}
                                 className={`flex flex-wrap items-center gap-1 text-xs ${
-                                  isActive ? 'font-semibold text-yellow-300' : isDone ? 'text-slate-500' : 'text-slate-300'
+                                  isActive
+                                    ? 'font-semibold text-yellow-600 dark:text-yellow-300'
+                                    : isDone
+                                      ? 'text-slate-400 dark:text-slate-500'
+                                      : 'text-slate-600 dark:text-slate-300'
                                 }`}
                               >
                                 {line.tiles.map((tile, ti) => (
                                   <span key={tile.id} className="flex items-center gap-1">
-                                    {ti > 0 && <span className="text-slate-600">→</span>}
+                                    {ti > 0 && <span className="text-slate-400 dark:text-slate-600">→</span>}
                                     <span>{tile.name}</span>
                                   </span>
                                 ))}
-                                {isActive && <span className="text-[10px] text-yellow-500">← current</span>}
+                                {isActive && (
+                                  <span className="text-[10px] text-yellow-600 dark:text-yellow-500">← current</span>
+                                )}
                               </div>
                             )
                           })}

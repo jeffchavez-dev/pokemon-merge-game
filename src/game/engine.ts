@@ -39,7 +39,16 @@ const MIN_HEIGHT = 320
 
 const GAME_OVER_GRACE_MS = 1200
 const DROP_COOLDOWN_MS = 450
-const RESTING_SPEED = 0.15
+// A dense pile of stacked circles never truly reaches near-zero velocity in
+// Matter's iterative solver — a merge or a fresh drop landing anywhere on the
+// board sends a small settling wave through every body it's touching,
+// measured up to ~1.5 in a normal busy pile. 0.15 was so strict that this
+// routine noise reset a resting piece's game-over timer before it could ever
+// accumulate GAME_OVER_GRACE_MS, so a piece sitting above the line for a
+// clearly-over game never actually ended it. Genuinely falling/bouncing
+// pieces are still an order of magnitude faster than this (well over 5), so
+// raising the bar doesn't risk counting an in-flight piece as resting.
+const RESTING_SPEED = 2.5
 const CELEBRATION_MS = 1500
 const THUNDER_MAX_TARGETS = 3
 const EXPLOSION_MS = 650
@@ -633,8 +642,12 @@ export class PokemonMergeGame {
     return tile.radius * this.scale * multiplier
   }
 
+  // Dividing by spriteFill scales each sprite up until its OWN visible
+  // artwork — not the padded 475x475 canvas — reaches the edge of its
+  // circle, so species with a lot of native padding stop floating with a
+  // visible gap around them while tightly-drawn ones are unaffected.
   private spriteScale(tile: Tile, justFormed = false): number {
-    return (this.radius(tile, justFormed) * 2) / tile.spriteSize
+    return (this.radius(tile, justFormed) * 2) / (tile.spriteSize * tile.spriteFill)
   }
 
   // Picks uniformly among every currently unlocked type's own active line.
